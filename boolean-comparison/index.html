@@ -1,0 +1,1170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0D1214" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#EAEEEE" media="(prefers-color-scheme: light)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="description" content="The same boolean cut evaluated two ways: as real triangles via BSP CSG, and as a distance field via raymarching.">
+<!--CONTENT-START-->
+<title>Two Ways to Cut a Solid</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* ---- light is the bare :root; dark redefines the same token names ---- */
+:root{
+  --bg:#EAEEEE; --panel:rgba(255,255,255,.82); --panel-solid:#FFFFFF;
+  --line:rgba(18,38,42,.16); --line-strong:rgba(18,38,42,.32);
+  --text:#101A1D; --muted:#54666C;
+  --mesh:#0F7F72; --field:#B4551C;
+  --shadow:0 1px 2px rgba(12,28,32,.10), 0 10px 26px rgba(12,28,32,.10);
+  --scene-top:#F2F5F5; --scene-bot:#C3CFD1;
+  --solid:#D8DDDE; --solid-cut:#BFC7C9;
+  --key:#FFF6E9; --fill:#9FB4BA;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0D1214; --panel:rgba(20,27,30,.80); --panel-solid:#141B1E;
+    --line:rgba(150,190,198,.16); --line-strong:rgba(150,190,198,.32);
+    --text:#DEE7E9; --muted:#7A8C92;
+    --mesh:#4FD1C0; --field:#F0894C;
+    --shadow:0 1px 2px rgba(0,0,0,.40), 0 12px 32px rgba(0,0,0,.46);
+    --scene-top:#18242A; --scene-bot:#070B0D;
+    --solid:#C3CBCE; --solid-cut:#98A4A8;
+    --key:#FFEFD8; --fill:#31505C;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0D1214; --panel:rgba(20,27,30,.80); --panel-solid:#141B1E;
+  --line:rgba(150,190,198,.16); --line-strong:rgba(150,190,198,.32);
+  --text:#DEE7E9; --muted:#7A8C92;
+  --mesh:#4FD1C0; --field:#F0894C;
+  --shadow:0 1px 2px rgba(0,0,0,.40), 0 12px 32px rgba(0,0,0,.46);
+  --scene-top:#18242A; --scene-bot:#070B0D;
+  --solid:#C3CBCE; --solid-cut:#98A4A8;
+  --key:#FFEFD8; --fill:#31505C;
+}
+
+*{box-sizing:border-box;}
+html,body{height:100%;margin:0;padding:0;}
+body{
+  background:var(--bg); color:var(--text);
+  font-family:Archivo, "Helvetica Neue", Arial, sans-serif;
+  overflow:hidden; overscroll-behavior:none;
+  -webkit-user-select:none; user-select:none;
+  -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent;
+  touch-action:none;
+}
+#stage{position:fixed; inset:0; touch-action:none;}
+#gl{display:block; width:100%; height:100%; touch-action:none;}
+
+/* ---- per-pane nameplates, coloured by which representation they mark ---- */
+.plate{
+  position:fixed; z-index:2; pointer-events:none;
+  display:flex; flex-direction:column; gap:1px;
+}
+.plate .tag{
+  font-size:11px; font-weight:700; letter-spacing:.18em; text-transform:uppercase;
+}
+.plate .sub{
+  font-family:"JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size:9.5px; letter-spacing:.02em; color:var(--muted);
+}
+.plate dl{
+  margin:7px 0 0; display:grid; grid-template-columns:auto auto; gap:1px 10px;
+  font-family:"JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size:10px; font-variant-numeric:tabular-nums;
+}
+.plate dt{ color:var(--muted); }
+.plate dd{ margin:0; color:var(--text); }
+.plate dd.off{ color:var(--muted); }
+#plateA .tag{ color:var(--mesh); }
+#plateB .tag{ color:var(--field); }
+
+/* ---- controls ---- */
+.dock{
+  position:fixed; left:0; right:0; bottom:0; z-index:3;
+  display:flex; flex-direction:column; align-items:center; gap:9px;
+  padding:0 max(14px, env(safe-area-inset-left)) max(14px, env(safe-area-inset-bottom))
+            max(14px, env(safe-area-inset-right));
+  pointer-events:none;
+}
+.card{
+  pointer-events:auto;
+  width:min(430px, calc(100vw - 26px));
+  background:var(--panel); border:1px solid var(--line); border-radius:13px;
+  box-shadow:var(--shadow);
+  -webkit-backdrop-filter:blur(16px) saturate(1.35); backdrop-filter:blur(16px) saturate(1.35);
+}
+.seg{ display:flex; padding:4px; gap:3px; }
+.seg button{ flex:1 1 0; }
+button{
+  font-family:inherit; font-size:11px; font-weight:600; letter-spacing:.11em; text-transform:uppercase;
+  color:var(--muted); background:transparent; border:1px solid transparent; border-radius:9px;
+  padding:8px 8px; min-height:36px; cursor:pointer; white-space:nowrap;
+  transition:background .15s ease, color .15s ease, border-color .15s ease;
+}
+button:hover{ color:var(--text); background:var(--line); }
+button[aria-pressed="true"]{ color:var(--text); background:var(--line); border-color:var(--line-strong); }
+button:focus-visible{ outline:2px solid var(--field); outline-offset:2px; }
+
+.knobs{ display:none; flex-direction:column; gap:9px; padding:11px 14px 12px; }
+.knobs.open{ display:flex; }
+.knob{ display:grid; grid-template-columns:1fr auto; align-items:baseline; gap:3px 10px; }
+.knob label{ font-size:10.5px; font-weight:600; letter-spacing:.13em; text-transform:uppercase; color:var(--muted); }
+.knob .val{
+  font-family:"JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size:10.5px; font-variant-numeric:tabular-nums; color:var(--text);
+}
+.knob input{ grid-column:1 / -1; }
+.knob .note{
+  grid-column:1 / -1; margin:-1px 0 0;
+  font-family:"JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size:9.5px; line-height:1.45; color:var(--muted);
+}
+.knob .note b{ color:var(--field); font-weight:400; }
+.toggles{ display:flex; gap:3px; }
+.toggles button{ flex:1 1 0; }
+
+input[type=range]{ -webkit-appearance:none; appearance:none; width:100%; height:22px; margin:0; background:transparent; cursor:pointer; }
+input[type=range]::-webkit-slider-runnable-track{ height:2px; border-radius:1px; background:var(--line-strong); }
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none; appearance:none; width:18px; height:18px; margin-top:-8px;
+  border-radius:50%; background:var(--field); border:2px solid var(--panel-solid);
+  box-shadow:0 1px 3px rgba(0,0,0,.4);
+}
+input[type=range]::-moz-range-track{ height:2px; border-radius:1px; background:var(--line-strong); border:none; }
+input[type=range]::-moz-range-thumb{ width:16px; height:16px; border-radius:50%; background:var(--field); border:2px solid var(--panel-solid); }
+input[type=range]#kDetail::-webkit-slider-thumb{ background:var(--mesh); }
+input[type=range]#kDetail::-moz-range-thumb{ background:var(--mesh); }
+input[type=range]:focus-visible{ outline:2px solid var(--field); outline-offset:4px; border-radius:4px; }
+
+.hint{
+  font-family:"JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size:10px; letter-spacing:.04em; text-transform:uppercase; color:var(--muted);
+  text-align:center; transition:opacity .5s ease;
+}
+.hint.gone{ opacity:0; }
+
+#divider{ position:fixed; z-index:1; background:var(--line-strong); pointer-events:none; }
+#fallback{ position:fixed; inset:0; z-index:9; display:none; place-content:center; padding:32px; text-align:center; background:var(--bg); }
+#fallback.show{ display:grid; }
+#fallback strong{ display:block; margin-bottom:10px; font-size:14px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; }
+#fallback p{ max-width:34ch; margin:0 auto; line-height:1.6; color:var(--muted); font-size:15px; }
+
+@media (prefers-reduced-motion: reduce){ *{ transition-duration:.01ms !important; } }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="gl" aria-label="Two panes comparing a mesh boolean against a signed distance field boolean"></canvas></div>
+
+<div class="plate" id="plateA">
+  <span class="tag">Mesh &middot; B-rep</span>
+  <span class="sub">bsp csg &rarr; real triangles</span>
+  <dl>
+    <dt>Tris</dt><dd id="aTris">0</dd>
+    <dt>Solve</dt><dd id="aMs">0.0 ms</dd>
+    <dt>Blend</dt><dd id="aBlend" class="off">n/a</dd>
+  </dl>
+</div>
+
+<div class="plate" id="plateB">
+  <span class="tag">Field &middot; SDF</span>
+  <span class="sub">raymarched &rarr; no geometry</span>
+  <dl>
+    <dt>Pixels</dt><dd id="bPix">0</dd>
+    <dt>Solve</dt><dd id="bMs">0.00 ms</dd>
+    <dt>Blend</dt><dd id="bBlend">0.00</dd>
+    <dt>Frame</dt><dd id="bFrame">60 fps</dd>
+  </dl>
+</div>
+
+<div class="dock">
+  <p class="hint" id="hint">Drag to push the cutter through the solid</p>
+  <div class="card">
+    <div class="knobs" id="knobs">
+      <div class="knob">
+        <label for="kBlend">Blend radius</label><span class="val" id="vBlend">0.00</span>
+        <input id="kBlend" type="range" min="0" max="0.34" step="0.01" value="0">
+        <p class="note">Free in a field — one <b>smin()</b>. No mesh equivalent.</p>
+      </div>
+      <div class="knob">
+        <label for="kDetail">Mesh detail</label><span class="val" id="vDetail">14 &times; 8</span>
+        <input id="kDetail" type="range" min="8" max="28" step="2" value="14">
+        <p class="note">Solve cost climbs <b>superlinearly</b>. The field never moves.</p>
+      </div>
+      <div class="toggles">
+        <button id="bWire" type="button" aria-pressed="false">Wireframe</button>
+        <button id="bHeat" type="button" aria-pressed="false">Step heat</button>
+      </div>
+    </div>
+    <div class="seg" role="group" aria-label="Boolean operation">
+      <button id="opSub" type="button" aria-pressed="true">Subtract</button>
+      <button id="opUni" type="button" aria-pressed="false">Union</button>
+      <button id="opInt" type="button" aria-pressed="false">Intersect</button>
+      <button id="bKnobs" type="button" aria-pressed="false" aria-controls="knobs" title="Options">&hellip;</button>
+    </div>
+  </div>
+</div>
+
+<div id="fallback"><div>
+  <strong>WebGL unavailable</strong>
+  <p id="fallbackMsg">This browser could not start a WebGL context. Try Safari or Chrome with hardware acceleration enabled.</p>
+</div></div>
+
+<script>
+"use strict";
+(function () {
+
+/* =========================================================================
+   Two Ways to Cut a Solid
+
+   The same boolean, evaluated two ways, under one camera and one lighting
+   rig so the representation is the only variable.
+
+     MESH   a BSP-tree CSG solver, in JS, producing real triangles
+     FIELD  a signed distance function, raymarched in the fragment shader
+
+   Both panes are told the same operation, the same box, the same cutter
+   sphere. What differs is what a "solid" even means to each of them.
+   ========================================================================= */
+
+var CFG = {
+  boxH: 0.62,          // half-extent of the solid being cut
+  cutR: 0.46,          // radius of the cutter sphere
+  reach: 0.95,         // how far the cutter can be dragged from the origin
+  fov: 38 * Math.PI / 180,
+  near: 0.05, far: 40,
+  maxSteps: 96,
+  surf: 0.0016         // raymarch hit threshold
+};
+
+var state = {
+  op: 0,               // 0 subtract | 1 union | 2 intersect
+  blend: 0,
+  detail: 14,
+  wire: false,
+  heat: false,
+  cut: { x: 0.52, y: 0.30, z: 0.30 },
+  yaw: -0.62, pitch: 0.42,
+  autoSpin: true
+};
+
+/* ------------------------------------------------------------ mat4 / mat3 */
+function m4() { return new Float32Array(16); }
+
+function perspective(o, fovy, aspect, near, far) {
+  var f = 1 / Math.tan(fovy * 0.5), nf = 1 / (near - far);
+  o.fill(0);
+  o[0] = f / aspect; o[5] = f; o[10] = (far + near) * nf; o[11] = -1; o[14] = 2 * far * near * nf;
+  return o;
+}
+
+function lookAt(o, ex, ey, ez, cx, cy, cz) {
+  var zx = ex - cx, zy = ey - cy, zz = ez - cz;
+  var l = 1 / Math.hypot(zx, zy, zz); zx *= l; zy *= l; zz *= l;
+  var xx = zz, xy = 0, xz = -zx;                  // cross((0,1,0), z)
+  l = Math.hypot(xx, xy, xz);
+  if (l < 1e-6) { xx = 1; xy = 0; xz = 0; } else { l = 1 / l; xx *= l; xy *= l; xz *= l; }
+  var yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
+  o[0] = xx; o[1] = yx; o[2] = zx; o[3] = 0;
+  o[4] = xy; o[5] = yy; o[6] = zy; o[7] = 0;
+  o[8] = xz; o[9] = yz; o[10] = zz; o[11] = 0;
+  o[12] = -(xx * ex + xy * ey + xz * ez);
+  o[13] = -(yx * ex + yy * ey + yz * ez);
+  o[14] = -(zx * ex + zy * ey + zz * ez);
+  o[15] = 1;
+  return o;
+}
+
+function mul(o, a, b) {
+  for (var c = 0; c < 4; c++) {
+    var b0 = b[c * 4], b1 = b[c * 4 + 1], b2 = b[c * 4 + 2], b3 = b[c * 4 + 3];
+    o[c * 4]     = a[0] * b0 + a[4] * b1 + a[8]  * b2 + a[12] * b3;
+    o[c * 4 + 1] = a[1] * b0 + a[5] * b1 + a[9]  * b2 + a[13] * b3;
+    o[c * 4 + 2] = a[2] * b0 + a[6] * b1 + a[10] * b2 + a[14] * b3;
+    o[c * 4 + 3] = a[3] * b0 + a[7] * b1 + a[11] * b2 + a[15] * b3;
+  }
+  return o;
+}
+
+/* =========================================================================
+   MESH SIDE - BSP-tree CSG
+   The classic Thibault/Naylor construction (as popularised by Evan Wallace's
+   csg.js): put each solid's polygons into a BSP tree, use each tree to clip
+   the other's polygons, then splice what survives back together.
+
+   Two deliberate departures from the usual implementation, both for
+   robustness: split fragments inherit their parent's plane rather than
+   recomputing one from three possibly-near-collinear vertices, and the
+   cutter sphere is emitted as triangles rather than quads, because a UV
+   sphere's quads are not planar and BSP clipping assumes they are.
+   ========================================================================= */
+var EPS = 1e-5;
+var COPLANAR = 0, FRONT = 1, BACK = 2, SPANNING = 3;
+
+function Vtx(x, y, z, nx, ny, nz) {
+  this.x = x; this.y = y; this.z = z; this.nx = nx; this.ny = ny; this.nz = nz;
+}
+Vtx.prototype.clone = function () { return new Vtx(this.x, this.y, this.z, this.nx, this.ny, this.nz); };
+Vtx.prototype.flip  = function () { this.nx = -this.nx; this.ny = -this.ny; this.nz = -this.nz; };
+Vtx.prototype.lerp  = function (o, t) {
+  return new Vtx(this.x + (o.x - this.x) * t, this.y + (o.y - this.y) * t, this.z + (o.z - this.z) * t,
+                 this.nx + (o.nx - this.nx) * t, this.ny + (o.ny - this.ny) * t, this.nz + (o.nz - this.nz) * t);
+};
+
+function Plane(nx, ny, nz, w) { this.nx = nx; this.ny = ny; this.nz = nz; this.w = w; }
+Plane.prototype.clone = function () { return new Plane(this.nx, this.ny, this.nz, this.w); };
+Plane.prototype.flip  = function () { this.nx = -this.nx; this.ny = -this.ny; this.nz = -this.nz; this.w = -this.w; };
+
+function planeFrom(v) {
+  // walk the fan until three vertices give a non-degenerate normal
+  var a = v[0], i, b, c, ux, uy, uz, vx, vy, vz, nx, ny, nz, l;
+  for (i = 1; i + 1 < v.length; i++) {
+    b = v[i]; c = v[i + 1];
+    ux = b.x - a.x; uy = b.y - a.y; uz = b.z - a.z;
+    vx = c.x - a.x; vy = c.y - a.y; vz = c.z - a.z;
+    nx = uy * vz - uz * vy; ny = uz * vx - ux * vz; nz = ux * vy - uy * vx;
+    l = Math.hypot(nx, ny, nz);
+    if (l > 1e-10) return new Plane(nx / l, ny / l, nz / l, (nx / l) * a.x + (ny / l) * a.y + (nz / l) * a.z);
+  }
+  return new Plane(0, 1, 0, 0);                   // fully degenerate; harmless
+}
+
+function Poly(verts, plane, tag) {
+  this.v = verts; this.plane = plane || planeFrom(verts); this.tag = tag || 0;
+}
+Poly.prototype.flip = function () {
+  this.v.reverse();
+  for (var i = 0; i < this.v.length; i++) this.v[i].flip();
+  this.plane.flip();
+};
+
+// Sort one polygon against this plane, splitting it if it spans.
+Plane.prototype.splitPolygon = function (poly, coFront, coBack, front, back) {
+  var kind = 0, types = [], i, t, v = poly.v, n = v.length;
+  for (i = 0; i < n; i++) {
+    t = this.nx * v[i].x + this.ny * v[i].y + this.nz * v[i].z - this.w;
+    var ty = (t < -EPS) ? BACK : (t > EPS) ? FRONT : COPLANAR;
+    kind |= ty; types.push(ty);
+  }
+  if (kind === COPLANAR) {
+    var d = this.nx * poly.plane.nx + this.ny * poly.plane.ny + this.nz * poly.plane.nz;
+    (d > 0 ? coFront : coBack).push(poly);
+  } else if (kind === FRONT) {
+    front.push(poly);
+  } else if (kind === BACK) {
+    back.push(poly);
+  } else {
+    var f = [], b = [];
+    for (i = 0; i < n; i++) {
+      var j = (i + 1) % n, ti = types[i], tj = types[j], vi = v[i], vj = v[j];
+      if (ti !== BACK)  f.push(vi);
+      if (ti !== FRONT) b.push(ti !== BACK ? vi.clone() : vi);
+      if ((ti | tj) === SPANNING) {
+        var num = this.w - (this.nx * vi.x + this.ny * vi.y + this.nz * vi.z);
+        var den = this.nx * (vj.x - vi.x) + this.ny * (vj.y - vi.y) + this.nz * (vj.z - vi.z);
+        var cut = vi.lerp(vj, num / den);
+        f.push(cut); b.push(cut.clone());
+      }
+    }
+    if (f.length >= 3) front.push(new Poly(f, poly.plane.clone(), poly.tag));
+    if (b.length >= 3) back.push(new Poly(b, poly.plane.clone(), poly.tag));
+  }
+};
+
+function Node(polys) {
+  this.plane = null; this.front = null; this.back = null; this.polys = [];
+  if (polys && polys.length) this.build(polys);
+}
+Node.prototype.build = function (polys) {
+  if (!polys.length) return;
+  if (!this.plane) this.plane = polys[0].plane.clone();
+  var front = [], back = [], i;
+  for (i = 0; i < polys.length; i++)
+    this.plane.splitPolygon(polys[i], this.polys, this.polys, front, back);
+  if (front.length) { if (!this.front) this.front = new Node(); this.front.build(front); }
+  if (back.length)  { if (!this.back)  this.back  = new Node(); this.back.build(back); }
+};
+Node.prototype.invert = function () {
+  for (var i = 0; i < this.polys.length; i++) this.polys[i].flip();
+  if (this.plane) this.plane.flip();
+  if (this.front) this.front.invert();
+  if (this.back)  this.back.invert();
+  var t = this.front; this.front = this.back; this.back = t;
+};
+// drop the parts of `polys` that fall inside this solid
+Node.prototype.clipPolygons = function (polys) {
+  if (!this.plane) return polys.slice();
+  var front = [], back = [], i;
+  for (i = 0; i < polys.length; i++) this.plane.splitPolygon(polys[i], front, back, front, back);
+  if (this.front) front = this.front.clipPolygons(front);
+  if (this.back)  back  = this.back.clipPolygons(back); else back = null;
+  if (back) for (i = 0; i < back.length; i++) front.push(back[i]);
+  return front;
+};
+Node.prototype.clipTo = function (other) {
+  this.polys = other.clipPolygons(this.polys);
+  if (this.front) this.front.clipTo(other);
+  if (this.back)  this.back.clipTo(other);
+};
+Node.prototype.all = function (out) {
+  out = out || [];
+  for (var i = 0; i < this.polys.length; i++) out.push(this.polys[i]);
+  if (this.front) this.front.all(out);
+  if (this.back)  this.back.all(out);
+  return out;
+};
+
+function csgUnion(pa, pb) {
+  var A = new Node(pa), B = new Node(pb);
+  A.clipTo(B); B.clipTo(A); B.invert(); B.clipTo(A); B.invert();
+  A.build(B.all());
+  return A.all();
+}
+function csgSubtract(pa, pb) {
+  var A = new Node(pa), B = new Node(pb);
+  A.invert(); A.clipTo(B); B.clipTo(A); B.invert(); B.clipTo(A); B.invert();
+  A.build(B.all()); A.invert();
+  return A.all();
+}
+function csgIntersect(pa, pb) {
+  var A = new Node(pa), B = new Node(pb);
+  A.invert(); B.clipTo(A); B.invert(); A.clipTo(B); B.clipTo(A);
+  A.build(B.all()); A.invert();
+  return A.all();
+}
+
+/* ------------------------------------------------------------- primitives */
+function boxPolys(h) {
+  var faces = [
+    [[0, 4, 6, 2], [-1, 0, 0]], [[1, 3, 7, 5], [1, 0, 0]],
+    [[0, 1, 5, 4], [0, -1, 0]], [[2, 6, 7, 3], [0, 1, 0]],
+    [[0, 2, 3, 1], [0, 0, -1]], [[4, 5, 7, 6], [0, 0, 1]]
+  ];
+  return faces.map(function (f) {
+    return new Poly(f[0].map(function (i) {
+      return new Vtx(h * ((i & 1) ? 1 : -1), h * ((i & 2) ? 1 : -1), h * ((i & 4) ? 1 : -1),
+                     f[1][0], f[1][1], f[1][2]);
+    }));
+  });
+}
+
+// emitted as triangles: a UV sphere's quads are not planar, and BSP
+// clipping quietly misbehaves on polygons that are not
+function spherePolys(cx, cy, cz, r, slices, stacks) {
+  var polys = [], i, j;
+  function vert(u, v) {
+    var th = u * Math.PI * 2, ph = v * Math.PI;
+    var dx = Math.cos(th) * Math.sin(ph), dy = Math.cos(ph), dz = Math.sin(th) * Math.sin(ph);
+    return new Vtx(cx + dx * r, cy + dy * r, cz + dz * r, dx, dy, dz);
+  }
+  for (i = 0; i < slices; i++) {
+    for (j = 0; j < stacks; j++) {
+      var u0 = i / slices, u1 = (i + 1) / slices, v0 = j / stacks, v1 = (j + 1) / stacks;
+      var a = vert(u0, v0), b = vert(u1, v0), c = vert(u1, v1), d = vert(u0, v1);
+      if (j > 0)          polys.push(new Poly([a, b, c.clone()], null, 1));
+      if (j < stacks - 1) polys.push(new Poly([a.clone(), c, d], null, 1));
+    }
+  }
+  return polys;
+}
+
+/* =========================================================================
+   Shaders. The lighting is written once, below, and pasted into BOTH the
+   raster and the raymarch fragment shaders. If the two panes were lit even
+   slightly differently the comparison would be worthless.
+   ========================================================================= */
+var SHADE = [
+"uniform vec3 uKey;",
+"uniform vec3 uFill;",
+"uniform vec3 uLdir;",
+"uniform vec3 uSolid;",
+"uniform vec3 uSolidCut;",
+"",
+"vec3 shoulder(vec3 c){",           // soft highlight roll-off instead of a hard clip
+"  vec3 k = vec3(0.82);",
+"  vec3 d = max(c - k, vec3(0.0));",
+"  return min(c, k) + d / (1.0 + d / (1.0 - k));",
+"}",
+"",
+"vec3 shade(vec3 N, vec3 V, vec3 albedo){",
+"  vec3 L = normalize(uLdir);",
+"  vec3 H = normalize(L + V);",
+"  float ndl = max(dot(N, L), 0.0);",
+"  float ndh = max(dot(N, H), 0.0);",
+"  float ndv = max(dot(N, V), 0.0);",
+"  float fres = pow(1.0 - ndv, 4.0);",
+"  float sheen = 0.5 + 0.5 * N.y;",
+"  vec3 c  = albedo * (uFill * (0.35 + 0.65 * sheen) * 0.88 + uKey * ndl * 1.22);",
+"  c += uKey * pow(ndh, 44.0) * 0.85;",
+"  c += uFill * fres * 0.40;",
+"  return shoulder(c);",
+"}"
+].join("\n");
+
+/* --------------------------------------------------------- raster (mesh) */
+var VS_MESH = [
+"precision highp float;",
+"attribute vec3 aPos;",
+"attribute vec3 aNor;",
+"attribute float aTag;",
+"uniform mat4 uVP;",
+"varying vec3 vP; varying vec3 vN; varying float vT;",
+"void main(){ vP = aPos; vN = aNor; vT = aTag; gl_Position = uVP * vec4(aPos, 1.0); }"
+].join("\n");
+
+var FS_MESH = [
+"precision highp float;",
+"varying vec3 vP; varying vec3 vN; varying float vT;",
+"uniform vec3 uCamPos;",
+SHADE,
+"void main(){",
+"  vec3 V = normalize(uCamPos - vP);",
+"  vec3 N = normalize(vN);",
+"  if (dot(N, V) < 0.0) N = -N;",   // CSG output is double-sided in places
+"  vec3 albedo = mix(uSolid, uSolidCut, clamp(vT, 0.0, 1.0));",
+"  gl_FragColor = vec4(shade(N, V, albedo), 1.0);",
+"}"
+].join("\n");
+
+/* ------------------------------------------------------- raymarch (field) */
+var VS_FULL = [
+"precision highp float;",
+"attribute vec2 aPos;",
+"void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }"
+].join("\n");
+
+var FS_SDF = [
+"precision highp float;",
+"uniform vec2  uOrg;",             // pane origin/size in device pixels
+"uniform vec2  uSize;",
+"uniform vec3  uCamPos, uCamRight, uCamUp, uCamFwd;",
+"uniform float uTanHalf, uAspect;",
+"uniform vec3  uCut;",
+"uniform float uBoxH, uCutR, uBlend, uOp, uHeat, uSurf;",
+SHADE,
+"",
+"float sdBox(vec3 p, float b){",
+"  vec3 q = abs(p) - vec3(b);",
+"  return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);",
+"}",
+"float sdSphere(vec3 p, vec3 c, float r){ return length(p - c) - r; }",
+"",
+/* the entire boolean vocabulary of a distance field, in four lines */
+"float smin(float a, float b, float k){",
+"  if (k <= 0.0) return min(a, b);",
+"  float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);",
+"  return mix(b, a, h) - k * h * (1.0 - h);",
+"}",
+"float smax(float a, float b, float k){ return -smin(-a, -b, k); }",
+"",
+"float combine(float a, float b){",
+"  if (uOp < 0.5) return smax(a, -b, uBlend);",   // subtract
+"  if (uOp < 1.5) return smin(a,  b, uBlend);",   // union
+"  return smax(a, b, uBlend);",                   // intersect
+"}",
+"float map(vec3 p){ return combine(sdBox(p, uBoxH), sdSphere(p, uCut, uCutR)); }",
+"",
+"vec3 normalAt(vec3 p){",
+"  vec2 e = vec2(1.0, -1.0) * 0.0007;",
+"  return normalize(e.xyy * map(p + e.xyy) + e.yyx * map(p + e.yyx) +",
+"                   e.yxy * map(p + e.yxy) + e.xxx * map(p + e.xxx));",
+"}",
+"",
+"vec3 heatRamp(float t){",
+"  vec3 a = vec3(0.03, 0.05, 0.07), b = vec3(0.12, 0.34, 0.42);",
+"  vec3 c = vec3(0.94, 0.54, 0.30), d = vec3(1.0, 0.97, 0.90);",
+"  if (t < 0.40) return mix(a, b, t / 0.40);",
+"  if (t < 0.75) return mix(b, c, (t - 0.40) / 0.35);",
+"  return mix(c, d, (t - 0.75) / 0.25);",
+"}",
+"",
+"void main(){",
+"  vec2 uv = (gl_FragCoord.xy - uOrg) / uSize * 2.0 - 1.0;",
+"  vec3 rd = normalize(uCamRight * (uv.x * uTanHalf * uAspect) +",
+"                      uCamUp    * (uv.y * uTanHalf) + uCamFwd);",
+"  vec3 ro = uCamPos;",
+"",
+/* skip the empty space in front of the scene's bounding sphere */
+"  float bb = dot(ro, rd);",
+"  float cc = dot(ro, ro) - 1.85 * 1.85;",
+"  float hh = bb * bb - cc;",
+"  if (hh < 0.0) discard;",
+"  float root = sqrt(hh);",
+"  float t = max(-bb - root, 0.0);",
+"  float tmax = -bb + root;",
+"",
+"  float steps = 0.0;",
+"  bool hit = false;",
+"  for (int i = 0; i < 96; i++){",
+"    vec3 p = ro + rd * t;",
+"    float d = map(p);",
+"    steps += 1.0;",
+"    if (d < uSurf){ hit = true; break; }",
+"    t += d;",
+"    if (t > tmax) break;",
+"  }",
+"",
+"  if (uHeat > 0.5){ gl_FragColor = vec4(heatRamp(steps / 96.0), 1.0); return; }",
+"  if (!hit) discard;",
+"",
+"  vec3 p = ro + rd * t;",
+"  vec3 N = normalAt(p);",
+"  vec3 V = normalize(uCamPos - p);",
+/* tint whichever primitive owns this surface, matching the mesh pane's tags */
+"  float db = abs(sdBox(p, uBoxH)), ds = abs(sdSphere(p, uCut, uCutR));",
+"  float tag = smoothstep(0.010, -0.010, ds - db);",
+"  gl_FragColor = vec4(shade(N, V, mix(uSolid, uSolidCut, tag)), 1.0);",
+"}"
+].join("\n");
+
+/* ------------------------------------------------------------ wire + sky */
+var VS_LINE = [
+"precision highp float;",
+"attribute vec3 aPos;",
+"uniform mat4 uVP;",
+"void main(){ gl_Position = uVP * vec4(aPos, 1.0); }"
+].join("\n");
+
+var FS_LINE = [
+"precision highp float;",
+"uniform vec3 uColor;",
+"uniform float uAlpha;",
+"void main(){ gl_FragColor = vec4(uColor, uAlpha); }"
+].join("\n");
+
+var FS_SKY = [
+"precision highp float;",
+"uniform vec2 uOrg, uSize;",
+"uniform vec3 uTop, uBot;",
+"void main(){",
+"  vec2 uv = (gl_FragCoord.xy - uOrg) / uSize;",
+"  vec3 c = mix(uBot, uTop, pow(clamp(uv.y, 0.0, 1.0), 0.9));",
+"  c *= 1.0 - smoothstep(0.30, 1.0, distance(uv, vec2(0.5, 0.55))) * 0.38;",
+"  gl_FragColor = vec4(c, 1.0);",
+"}"
+].join("\n");
+
+/* ------------------------------------------------------------ gl context */
+var canvas = document.getElementById("gl");
+var gl = null;
+try {
+  var opts = { antialias: true, alpha: false, depth: true, premultipliedAlpha: false,
+               powerPreference: "high-performance" };
+  gl = canvas.getContext("webgl", opts) || canvas.getContext("experimental-webgl", opts);
+} catch (e) { gl = null; }
+if (!gl) { document.getElementById("fallback").classList.add("show"); return; }
+
+function compile(type, src, label) {
+  var sh = gl.createShader(type);
+  gl.shaderSource(sh, src); gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(label + ": " + gl.getShaderInfoLog(sh));
+  return sh;
+}
+function program(vs, fs, label) {
+  var p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs, label + " vs"));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs, label + " fs"));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(label + " link: " + gl.getProgramInfoLog(p));
+  p.u = {}; p.a = {};
+  var n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS), i, d;
+  for (i = 0; i < n; i++) { d = gl.getActiveUniform(p, i); p.u[d.name] = gl.getUniformLocation(p, d.name); }
+  n = gl.getProgramParameter(p, gl.ACTIVE_ATTRIBUTES);
+  for (i = 0; i < n; i++) { d = gl.getActiveAttrib(p, i); p.a[d.name] = gl.getAttribLocation(p, d.name); }
+  p.U = function (name) { return p.u[name] === undefined ? null : p.u[name]; };
+  return p;
+}
+
+var pMesh, pSdf, pLine, pSky, quadBuf, bufP, bufN, bufT, bufL;
+try {
+  pMesh = program(VS_MESH, FS_MESH, "mesh");
+  pSdf  = program(VS_FULL, FS_SDF,  "sdf");
+  pLine = program(VS_LINE, FS_LINE, "line");
+  pSky  = program(VS_FULL, FS_SKY,  "sky");
+} catch (err) {
+  document.getElementById("fallbackMsg").textContent =
+    "WebGL started but rejected the shaders. " + err.message;
+  document.getElementById("fallback").classList.add("show");
+  return;
+}
+quadBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+bufP = gl.createBuffer(); bufN = gl.createBuffer(); bufT = gl.createBuffer(); bufL = gl.createBuffer();
+
+/* ------------------------------------------------------- palette from CSS */
+var PAL = {};
+function rgb(css, name, fb) {
+  var v = css.getPropertyValue(name).trim() || fb;
+  if (v.charAt(0) === "#") {
+    if (v.length === 4) v = "#" + v[1] + v[1] + v[2] + v[2] + v[3] + v[3];
+    return [parseInt(v.substr(1, 2), 16) / 255, parseInt(v.substr(3, 2), 16) / 255,
+            parseInt(v.substr(5, 2), 16) / 255];
+  }
+  var m = v.match(/[\d.]+/g);
+  return (m && m.length >= 3) ? [+m[0] / 255, +m[1] / 255, +m[2] / 255] : [0.5, 0.5, 0.5];
+}
+function readPalette() {
+  var c = getComputedStyle(document.documentElement);
+  PAL.top   = rgb(c, "--scene-top", "#18242A");
+  PAL.bot   = rgb(c, "--scene-bot", "#070B0D");
+  PAL.solid = rgb(c, "--solid",     "#C3CBCE");
+  PAL.cut   = rgb(c, "--solid-cut", "#98A4A8");
+  PAL.key   = rgb(c, "--key",       "#FFEFD8");
+  PAL.fill  = rgb(c, "--fill",      "#31505C");
+  PAL.mesh  = rgb(c, "--mesh",      "#4FD1C0");
+}
+readPalette();
+var mqDark = window.matchMedia("(prefers-color-scheme: dark)");
+(mqDark.addEventListener ? mqDark.addEventListener.bind(mqDark, "change")
+                         : mqDark.addListener.bind(mqDark))(readPalette);
+new MutationObserver(readPalette).observe(document.documentElement,
+  { attributes: true, attributeFilter: ["data-theme", "class", "style"] });
+
+/* ------------------------------------------ CSG evaluation + tessellation */
+var MB = { P: null, N: null, T: null, L: null, tri: 0, line: 0, cap: 0, lcap: 0 };
+var solved = { key: "", ms: 0, tris: 0 };
+
+function ensure(n, ln) {
+  if (n > MB.cap) {
+    MB.cap = Math.max(n, MB.cap * 2, 4096);
+    MB.P = new Float32Array(MB.cap * 3); MB.N = new Float32Array(MB.cap * 3);
+    MB.T = new Float32Array(MB.cap);
+  }
+  if (ln > MB.lcap) { MB.lcap = Math.max(ln, MB.lcap * 2, 4096); MB.L = new Float32Array(MB.lcap * 3); }
+}
+
+function tessellate(polys) {
+  var i, j, nv = 0, nl = 0;
+  for (i = 0; i < polys.length; i++) { nv += (polys[i].v.length - 2) * 3; nl += polys[i].v.length * 2; }
+  ensure(nv, nl);
+  var vi = 0, li = 0;
+  for (i = 0; i < polys.length; i++) {
+    var v = polys[i].v, tag = polys[i].tag, n = v.length;
+    for (j = 2; j < n; j++) {                       // fan triangulation for the fill
+      var tri = [v[0], v[j - 1], v[j]];
+      // drop slivers: CSG splitting leaves degenerate fragments that
+      // otherwise z-fight into visible specks across the flat faces
+      var e1x = tri[1].x - tri[0].x, e1y = tri[1].y - tri[0].y, e1z = tri[1].z - tri[0].z;
+      var e2x = tri[2].x - tri[0].x, e2y = tri[2].y - tri[0].y, e2z = tri[2].z - tri[0].z;
+      var cx2 = e1y * e2z - e1z * e2y, cy2 = e1z * e2x - e1x * e2z, cz2 = e1x * e2y - e1y * e2x;
+      if (cx2 * cx2 + cy2 * cy2 + cz2 * cz2 < 4e-11) continue;
+      for (var k = 0; k < 3; k++) {
+        MB.P[vi * 3] = tri[k].x; MB.P[vi * 3 + 1] = tri[k].y; MB.P[vi * 3 + 2] = tri[k].z;
+        MB.N[vi * 3] = tri[k].nx; MB.N[vi * 3 + 1] = tri[k].ny; MB.N[vi * 3 + 2] = tri[k].nz;
+        MB.T[vi] = tag; vi++;
+      }
+    }
+    for (j = 0; j < n; j++) {                       // true polygon edges, not fan diagonals
+      var a = v[j], b = v[(j + 1) % n];
+      MB.L[li * 3] = a.x; MB.L[li * 3 + 1] = a.y; MB.L[li * 3 + 2] = a.z; li++;
+      MB.L[li * 3] = b.x; MB.L[li * 3 + 1] = b.y; MB.L[li * 3 + 2] = b.z; li++;
+    }
+  }
+  MB.tri = vi; MB.line = li;
+}
+
+function solveMesh() {
+  var stacks = Math.max(4, Math.round(state.detail * 0.6));
+  var key = [state.op, state.detail, state.cut.x.toFixed(4), state.cut.y.toFixed(4),
+             state.cut.z.toFixed(4)].join("|");
+  if (key === solved.key) return;
+
+  var t0 = (performance && performance.now) ? performance.now() : Date.now();
+  var out;
+  try {
+    var A = boxPolys(CFG.boxH);
+    var B = spherePolys(state.cut.x, state.cut.y, state.cut.z, CFG.cutR, state.detail, stacks);
+    out = state.op === 0 ? csgSubtract(A, B) : state.op === 1 ? csgUnion(A, B) : csgIntersect(A, B);
+    tessellate(out);
+  } catch (err) {
+    solved.key = key;                     // keep the last good mesh on screen
+    return;
+  }
+  var t1 = (performance && performance.now) ? performance.now() : Date.now();
+
+  solved.key = key; solved.ms = t1 - t0; solved.tris = MB.tri / 3;
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufP);
+  gl.bufferData(gl.ARRAY_BUFFER, MB.P.subarray(0, MB.tri * 3), gl.DYNAMIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufN);
+  gl.bufferData(gl.ARRAY_BUFFER, MB.N.subarray(0, MB.tri * 3), gl.DYNAMIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufT);
+  gl.bufferData(gl.ARRAY_BUFFER, MB.T.subarray(0, MB.tri), gl.DYNAMIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufL);
+  gl.bufferData(gl.ARRAY_BUFFER, MB.L.subarray(0, MB.line * 3), gl.DYNAMIC_DRAW);
+}
+
+/* ---------------------------------------------------------- panes, camera */
+var divider = document.createElement("div");
+divider.id = "divider";
+document.body.appendChild(divider);
+
+var W = 1, H = 1, dpr = 1, wide = false;
+var paneA = { x: 0, y: 0, w: 1, h: 1 }, paneB = { x: 0, y: 0, w: 1, h: 1 };
+var cam = { dist: 4, ex: 0, ey: 0, ez: 4, rx: 1, ry: 0, rz: 0, ux: 0, uy: 1, uz: 0,
+            fx: 0, fy: 0, fz: -1, scale: 0.004 };
+var view = m4(), proj = m4(), vp = m4();
+var renderScale = 1;
+var SCENE_R = 1.52;
+
+function fitDistance(aspect) {
+  var vHalf = CFG.fov * 0.5;
+  var hHalf = Math.atan(Math.tan(vHalf) * aspect);
+  return SCENE_R / Math.sin(Math.min(vHalf, hHalf)) * 1.06;
+}
+
+function layout() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2) * renderScale;
+  var cw = canvas.clientWidth || window.innerWidth;
+  var ch = canvas.clientHeight || window.innerHeight;
+  W = Math.max(2, Math.round(cw * dpr)); H = Math.max(2, Math.round(ch * dpr));
+  if (canvas.width !== W) canvas.width = W;
+  if (canvas.height !== H) canvas.height = H;
+
+  wide = (cw / ch) > 1.08;
+  if (wide) {
+    var half = Math.floor(W / 2);
+    paneA = { x: 0, y: 0, w: half, h: H };
+    paneB = { x: half, y: 0, w: W - half, h: H };
+  } else {
+    var hh = Math.floor(H / 2);
+    paneA = { x: 0, y: hh, w: W, h: H - hh };      // GL origin is bottom-left
+    paneB = { x: 0, y: 0, w: W, h: hh };
+  }
+  cam.dist = Math.max(fitDistance(paneA.w / paneA.h), fitDistance(paneB.w / paneB.h));
+  cam.scale = (2 * cam.dist * Math.tan(CFG.fov * 0.5)) / (paneA.h / dpr);
+
+  // place the DOM nameplates to match the GL panes
+  var pad = 14, plateA = document.getElementById("plateA"), plateB = document.getElementById("plateB");
+  var topInset = "max(" + pad + "px, env(safe-area-inset-top))";
+  plateA.style.left = "max(" + pad + "px, env(safe-area-inset-left))";
+  plateA.style.top = topInset;
+  if (wide) {
+    plateB.style.left = (cw / 2 + pad) + "px";
+    plateB.style.right = "auto";
+    plateB.style.top = topInset;
+  } else {
+    plateB.style.left = "max(" + pad + "px, env(safe-area-inset-left))";
+    plateB.style.right = "auto";
+    plateB.style.top = (ch / 2 + pad) + "px";
+  }
+  if (wide) {
+    divider.style.left = (cw / 2) + "px"; divider.style.top = "0";
+    divider.style.width = "1px"; divider.style.height = "100%";
+  } else {
+    divider.style.left = "0"; divider.style.top = (ch / 2) + "px";
+    divider.style.width = "100%"; divider.style.height = "1px";
+  }
+  document.getElementById("bPix").textContent =
+    (paneB.w * paneB.h / 1000 < 1000 ? Math.round(paneB.w * paneB.h / 1000) + "k"
+                                     : (paneB.w * paneB.h / 1e6).toFixed(1) + "M");
+}
+
+function updateCamera() {
+  var cp = Math.cos(state.pitch), sp = Math.sin(state.pitch);
+  cam.ex = cam.dist * cp * Math.sin(state.yaw);
+  cam.ey = cam.dist * sp;
+  cam.ez = cam.dist * cp * Math.cos(state.yaw);
+  var l = 1 / Math.hypot(cam.ex, cam.ey, cam.ez);
+  cam.fx = -cam.ex * l; cam.fy = -cam.ey * l; cam.fz = -cam.ez * l;
+  // right = normalize(cross(fwd, worldUp))
+  var rx = -cam.fz, ry = 0, rz = cam.fx;         // cross(fwd, worldUp)
+  l = Math.hypot(rx, ry, rz); if (l < 1e-6) { rx = 1; rz = 0; l = 1; }
+  cam.rx = rx / l; cam.ry = 0; cam.rz = rz / l;
+  cam.ux = cam.ry * cam.fz - cam.rz * cam.fy;
+  cam.uy = cam.rz * cam.fx - cam.rx * cam.fz;
+  cam.uz = cam.rx * cam.fy - cam.ry * cam.fx;
+  lookAt(view, cam.ex, cam.ey, cam.ez, 0, 0, 0);
+}
+
+/* ------------------------------------------------------------------ draw */
+var LDIR = [0, 1, 0];
+
+function bindAttr(prog, name, buf, size) {
+  var loc = prog.a[name];
+  if (loc === undefined || loc < 0) return;
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0);
+}
+
+function sky(pane) {
+  gl.useProgram(pSky);
+  bindAttr(pSky, "aPos", quadBuf, 2);
+  gl.uniform2f(pSky.U("uOrg"), pane.x, pane.y);
+  gl.uniform2f(pSky.U("uSize"), pane.w, pane.h);
+  gl.uniform3fv(pSky.U("uTop"), PAL.top);
+  gl.uniform3fv(pSky.U("uBot"), PAL.bot);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+function shadeUniforms(prog) {
+  gl.uniform3fv(prog.U("uKey"), PAL.key);
+  gl.uniform3fv(prog.U("uFill"), PAL.fill);
+  gl.uniform3fv(prog.U("uSolid"), PAL.solid);
+  gl.uniform3fv(prog.U("uSolidCut"), PAL.cut);
+  gl.uniform3f(prog.U("uLdir"), LDIR[0], LDIR[1], LDIR[2]);
+}
+
+function draw() {
+  // key light lives in camera space, so orbiting never plunges the solid
+  // into darkness - and both panes are handed the identical vector
+  LDIR[0] = cam.rx * -0.45 + cam.ux * 0.72 + cam.fx * -0.50;
+  LDIR[1] = cam.ry * -0.45 + cam.uy * 0.72 + cam.fy * -0.50;
+  LDIR[2] = cam.rz * -0.45 + cam.uz * 0.72 + cam.fz * -0.50;
+
+  gl.enable(gl.SCISSOR_TEST);
+
+  /* ---- pane A : real triangles from the CSG solver ---- */
+  gl.viewport(paneA.x, paneA.y, paneA.w, paneA.h);
+  gl.scissor(paneA.x, paneA.y, paneA.w, paneA.h);
+  gl.depthMask(true);
+  gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND);
+  sky(paneA);
+  gl.clear(gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  gl.disable(gl.CULL_FACE);                 // CSG output is shaded double-sided
+
+  perspective(proj, CFG.fov, paneA.w / paneA.h, CFG.near, CFG.far);
+  mul(vp, proj, view);
+  gl.useProgram(pMesh);
+  gl.uniformMatrix4fv(pMesh.U("uVP"), false, vp);
+  gl.uniform3f(pMesh.U("uCamPos"), cam.ex, cam.ey, cam.ez);
+  shadeUniforms(pMesh);
+  bindAttr(pMesh, "aPos", bufP, 3);
+  bindAttr(pMesh, "aNor", bufN, 3);
+  bindAttr(pMesh, "aTag", bufT, 1);
+  if (state.wire) { gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1.0, 1.0); }
+  gl.drawArrays(gl.TRIANGLES, 0, MB.tri);
+  if (state.wire) {
+    gl.disable(gl.POLYGON_OFFSET_FILL);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.useProgram(pLine);
+    gl.uniformMatrix4fv(pLine.U("uVP"), false, vp);
+    gl.uniform3fv(pLine.U("uColor"), PAL.mesh);
+    gl.uniform1f(pLine.U("uAlpha"), 0.62);
+    bindAttr(pLine, "aPos", bufL, 3);
+    gl.drawArrays(gl.LINES, 0, MB.line);
+    gl.disable(gl.BLEND);
+  }
+
+  /* ---- pane B : the same solid, never built ---- */
+  gl.viewport(paneB.x, paneB.y, paneB.w, paneB.h);
+  gl.scissor(paneB.x, paneB.y, paneB.w, paneB.h);
+  gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND);
+  sky(paneB);
+  gl.useProgram(pSdf);
+  bindAttr(pSdf, "aPos", quadBuf, 2);
+  gl.uniform2f(pSdf.U("uOrg"), paneB.x, paneB.y);
+  gl.uniform2f(pSdf.U("uSize"), paneB.w, paneB.h);
+  gl.uniform3f(pSdf.U("uCamPos"), cam.ex, cam.ey, cam.ez);
+  gl.uniform3f(pSdf.U("uCamRight"), cam.rx, cam.ry, cam.rz);
+  gl.uniform3f(pSdf.U("uCamUp"), cam.ux, cam.uy, cam.uz);
+  gl.uniform3f(pSdf.U("uCamFwd"), cam.fx, cam.fy, cam.fz);
+  gl.uniform1f(pSdf.U("uTanHalf"), Math.tan(CFG.fov * 0.5));
+  gl.uniform1f(pSdf.U("uAspect"), paneB.w / paneB.h);
+  gl.uniform3f(pSdf.U("uCut"), state.cut.x, state.cut.y, state.cut.z);
+  gl.uniform1f(pSdf.U("uBoxH"), CFG.boxH);
+  gl.uniform1f(pSdf.U("uCutR"), CFG.cutR);
+  gl.uniform1f(pSdf.U("uBlend"), state.blend);
+  gl.uniform1f(pSdf.U("uOp"), state.op);
+  gl.uniform1f(pSdf.U("uHeat"), state.heat ? 1 : 0);
+  gl.uniform1f(pSdf.U("uSurf"), CFG.surf);
+  shadeUniforms(pSdf);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  gl.disable(gl.SCISSOR_TEST);
+}
+
+/* ----------------------------------------------------------------- input */
+var stage = document.getElementById("stage");
+var hint = document.getElementById("hint");
+var ptrs = new Map(), anchor = null, idle = 0;
+
+function centroid() {
+  var x = 0, y = 0;
+  ptrs.forEach(function (p) { x += p.x; y += p.y; });
+  var n = ptrs.size || 1;
+  return { x: x / n, y: y / n, n: ptrs.size };
+}
+function reanchor() {
+  var c = centroid();
+  anchor = { cx: c.x, cy: c.y, n: c.n, yaw: state.yaw, pitch: state.pitch,
+             cut: { x: state.cut.x, y: state.cut.y, z: state.cut.z } };
+}
+function touched() {
+  idle = 0;
+  if (hint && !hint.classList.contains("gone")) hint.classList.add("gone");
+}
+function clampCut() {
+  var l = Math.hypot(state.cut.x, state.cut.y, state.cut.z);
+  if (l > CFG.reach) { var f = CFG.reach / l; state.cut.x *= f; state.cut.y *= f; state.cut.z *= f; }
+}
+
+stage.addEventListener("pointerdown", function (e) {
+  ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (stage.setPointerCapture) { try { stage.setPointerCapture(e.pointerId); } catch (err) {} }
+  reanchor(); touched(); e.preventDefault();
+});
+stage.addEventListener("pointermove", function (e) {
+  if (!ptrs.has(e.pointerId) || !anchor) return;
+  ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  var c = centroid();
+  if (c.n !== anchor.n) { reanchor(); return; }
+  var dx = c.x - anchor.cx, dy = c.y - anchor.cy;
+  if (c.n >= 2) {                                  // two fingers orbit the camera
+    state.yaw = anchor.yaw + dx * 0.007;
+    state.pitch = Math.max(-1.15, Math.min(1.15, anchor.pitch - dy * 0.007));
+  } else {                                         // one finger pushes the cutter
+    var wx = dx * cam.scale, wy = -dy * cam.scale;
+    state.cut.x = anchor.cut.x + cam.rx * wx + cam.ux * wy;
+    state.cut.y = anchor.cut.y + cam.ry * wx + cam.uy * wy;
+    state.cut.z = anchor.cut.z + cam.rz * wx + cam.uz * wy;
+    clampCut();
+  }
+  touched(); e.preventDefault();
+});
+function lift(e) {
+  if (!ptrs.has(e.pointerId)) return;
+  ptrs.delete(e.pointerId);
+  if (ptrs.size) reanchor(); else anchor = null;
+}
+stage.addEventListener("pointerup", lift);
+stage.addEventListener("pointercancel", lift);
+
+stage.addEventListener("wheel", function (e) {           // wheel drives cutter depth
+  var d = e.deltaY * cam.scale * 0.6;
+  state.cut.x += cam.fx * d; state.cut.y += cam.fy * d; state.cut.z += cam.fz * d;
+  clampCut(); touched(); e.preventDefault();
+}, { passive: false });
+
+stage.tabIndex = 0;
+stage.addEventListener("keydown", function (e) {
+  var s = 0.05, used = true;
+  if (e.shiftKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+    state.yaw += (e.key === "ArrowLeft" ? -0.09 : 0.09);
+  } else if (e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+    state.pitch = Math.max(-1.15, Math.min(1.15, state.pitch + (e.key === "ArrowUp" ? 0.09 : -0.09)));
+  } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+    var a = (e.key === "ArrowLeft" ? -s : s);
+    state.cut.x += cam.rx * a; state.cut.y += cam.ry * a; state.cut.z += cam.rz * a; clampCut();
+  } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+    var b = (e.key === "ArrowUp" ? s : -s);
+    state.cut.x += cam.ux * b; state.cut.y += cam.uy * b; state.cut.z += cam.uz * b; clampCut();
+  } else used = false;
+  if (used) { touched(); e.preventDefault(); }
+});
+
+document.addEventListener("touchmove", function (e) { e.preventDefault(); }, { passive: false });
+["gesturestart", "gesturechange", "gestureend"].forEach(function (n) {
+  document.addEventListener(n, function (e) { e.preventDefault(); });
+});
+
+/* -------------------------------------------------------------------- UI */
+var aTris = document.getElementById("aTris"), aMs = document.getElementById("aMs");
+var aBlend = document.getElementById("aBlend"), bMs = document.getElementById("bMs");
+var bBlend = document.getElementById("bBlend"), bFrame = document.getElementById("bFrame");
+
+var opBtns = [document.getElementById("opSub"), document.getElementById("opUni"),
+              document.getElementById("opInt")];
+opBtns.forEach(function (btn, i) {
+  btn.addEventListener("click", function () {
+    state.op = i;
+    opBtns.forEach(function (b, j) { b.setAttribute("aria-pressed", j === i ? "true" : "false"); });
+    touched();
+  });
+});
+
+var knobs = document.getElementById("knobs"), bKnobs = document.getElementById("bKnobs");
+bKnobs.addEventListener("click", function () {
+  var open = knobs.classList.toggle("open");
+  bKnobs.setAttribute("aria-pressed", open ? "true" : "false");
+});
+
+function toggle(id, key) {
+  var b = document.getElementById(id);
+  b.addEventListener("click", function () {
+    state[key] = !state[key];
+    b.setAttribute("aria-pressed", state[key] ? "true" : "false");
+  });
+}
+toggle("bWire", "wire");
+toggle("bHeat", "heat");
+
+var kBlend = document.getElementById("kBlend"), vBlend = document.getElementById("vBlend");
+kBlend.addEventListener("input", function () {
+  state.blend = parseFloat(kBlend.value);
+  vBlend.textContent = state.blend.toFixed(2);
+  bBlend.textContent = state.blend.toFixed(2);
+  // the mesh side has no answer for this - say so rather than staying silent
+  aBlend.textContent = state.blend > 0 ? "no equivalent" : "n/a";
+  aBlend.className = state.blend > 0 ? "" : "off";
+});
+var kDetail = document.getElementById("kDetail"), vDetail = document.getElementById("vDetail");
+kDetail.addEventListener("input", function () {
+  state.detail = parseInt(kDetail.value, 10);
+  vDetail.textContent = state.detail + " × " + Math.max(4, Math.round(state.detail * 0.6));
+});
+
+/* ------------------------------------------------------------- main loop */
+var last = 0, teleT = 0, ftAvg = 16, slow = 0;
+var reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+function tick(now) {
+  requestAnimationFrame(tick);
+  if (!last) { last = now; return; }
+  var dtms = now - last; last = now;
+  var dt = Math.min(dtms / 1000, 0.1);
+  if (dt <= 0) return;
+
+  idle += dt;
+  if (state.autoSpin && !reduceMotion && ptrs.size === 0 && idle > 3) state.yaw += 0.11 * dt;
+
+  var before = solved.key;
+  solveMesh();
+  var solveCost = (solved.key !== before) ? solved.ms : 0;
+
+  updateCamera();
+  draw();
+
+  // Only the non-CSG part of the frame says anything about GPU load, so the
+  // detail slider cannot trick the page into shrinking its own resolution.
+  ftAvg += ((dtms - solveCost) - ftAvg) * 0.1;
+  if (ftAvg > 26 && renderScale > 0.62) {
+    if (++slow > 45) { renderScale = Math.max(0.62, renderScale - 0.18); slow = 0; layout(); }
+  } else slow = 0;
+
+  teleT += dt;
+  if (teleT > 0.16) {
+    teleT = 0;
+    aTris.textContent = solved.tris.toLocaleString();
+    aMs.textContent = solved.ms.toFixed(solved.ms < 10 ? 2 : 1) + " ms";
+    bMs.textContent = "0.00 ms";
+    if (bFrame) bFrame.textContent = Math.round(1000 / Math.max(dtms, 1)) + " fps";
+  }
+}
+
+window.addEventListener("resize", layout);
+window.addEventListener("orientationchange", function () { setTimeout(layout, 220); });
+document.addEventListener("visibilitychange", function () { last = 0; });
+
+(function warmUp() {
+  for (var i = 0; i < 8; i++) csgSubtract(boxPolys(CFG.boxH),
+    spherePolys(0.40 + i * 0.01, 0.22, 0.20, CFG.cutR, 12, 7));
+})();
+
+layout();
+updateCamera();
+requestAnimationFrame(tick);
+
+})();
+</script>
+<!--CONTENT-END-->
+</body>
+</html>
