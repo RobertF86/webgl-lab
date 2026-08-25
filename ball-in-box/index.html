@@ -1,0 +1,1191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0E1317" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#E9EEF0" media="(prefers-color-scheme: light)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="description" content="A brass test mass loose inside an open-topped glass box. Drag the box; the ball answers with real rigid-body physics.">
+<!--CONTENT-START-->
+<title>Ball in a Glass Box</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* ---- tokens : light is the bare :root, dark redefines only values ---- */
+:root{
+  --ink:#E9EEF0; --ink2:#DCE4E8;
+  --panel:rgba(255,255,255,.80); --panel-solid:#FFFFFF;
+  --line:rgba(24,44,56,.16); --line-strong:rgba(24,44,56,.30);
+  --text:#16212A; --muted:#5A6D79;
+  --brass:#9C6410; --brass-bright:#C2820F;
+  --glass:#2F6D85;
+  --shadow:0 1px 2px rgba(16,32,40,.10), 0 8px 24px rgba(16,32,40,.10);
+  --scene-top:#EDF2F4; --scene-bot:#AEC0C9;
+  --ball-a:#D0942E; --ball-b:#33291E;
+  --wall:#83B4C9; --wall-a:0.14;
+  --floor:#C6D3D9; --floorline:#5F7A87;
+  --ground:#CFDBE0; --shade:#3C4E58;
+  --key:#FFF0DC; --fill:#8FAABA;
+}
+:root:not([data-theme="light"]){
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --ink:#0E1317; --ink2:#080C0F;
+    --panel:rgba(21,29,35,.78); --panel-solid:#151D23;
+    --line:rgba(154,190,206,.16); --line-strong:rgba(154,190,206,.30);
+    --text:#DDE7EC; --muted:#7B8D99;
+    --brass:#E3A33C; --brass-bright:#F6BE5E;
+    --glass:#86BCCF;
+    --shadow:0 1px 2px rgba(0,0,0,.35), 0 10px 30px rgba(0,0,0,.42);
+    --scene-top:#18232B; --scene-bot:#070A0D;
+    --ball-a:#E0A03C; --ball-b:#2A2118;
+    --wall:#8FC6DA; --wall-a:0.16;
+    --floor:#AEC0C9; --floorline:#607A87;
+    --ground:#20303A; --shade:#03070A;
+    --key:#FFEBCB; --fill:#2C4557;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --ink:#0E1317; --ink2:#080C0F;
+  --panel:rgba(21,29,35,.78); --panel-solid:#151D23;
+  --line:rgba(154,190,206,.16); --line-strong:rgba(154,190,206,.30);
+  --text:#DDE7EC; --muted:#7B8D99;
+  --brass:#E3A33C; --brass-bright:#F6BE5E;
+  --glass:#86BCCF;
+  --shadow:0 1px 2px rgba(0,0,0,.35), 0 10px 30px rgba(0,0,0,.42);
+  --scene-top:#18232B; --scene-bot:#070A0D;
+  --ball-a:#E0A03C; --ball-b:#2A2118;
+  --wall:#8FC6DA; --wall-a:0.16;
+  --floor:#AEC0C9; --floorline:#607A87;
+  --ground:#20303A; --shade:#03070A;
+  --key:#FFEBCB; --fill:#2C4557;
+}
+
+*{box-sizing:border-box;}
+html,body{height:100%;margin:0;padding:0;}
+body{
+  background:var(--ink);
+  color:var(--text);
+  font-family:"Barlow Semi Condensed", "Helvetica Neue", Arial, sans-serif;
+  overflow:hidden;
+  overscroll-behavior:none;
+  -webkit-user-select:none; user-select:none;
+  -webkit-touch-callout:none;
+  -webkit-tap-highlight-color:transparent;
+  touch-action:none;
+}
+
+#stage{position:fixed; inset:0; touch-action:none;}
+#gl{display:block; width:100%; height:100%; touch-action:none;}
+
+/* ---- floating instrument chrome ---- */
+.hud{
+  position:fixed; z-index:2;
+  pointer-events:none;
+  padding:max(14px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right))
+          max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+}
+.hud.tl{top:0; left:0;}
+.hud.tr{top:0; right:0; text-align:right;}
+.hud.bc{left:0; right:0; bottom:0; display:flex; flex-direction:column; align-items:center; gap:10px;}
+
+.plate{ display:flex; flex-direction:column; gap:2px; }
+.plate h1{
+  margin:0; font-size:15px; font-weight:600; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--text); text-wrap:balance;
+}
+.plate .rule{ width:34px; height:2px; background:var(--brass); margin:5px 0 3px; }
+.plate p{
+  margin:0; font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size:10px; letter-spacing:.06em; color:var(--muted); text-transform:uppercase;
+}
+
+.telemetry{
+  display:inline-grid; grid-template-columns:auto auto; gap:1px 12px;
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size:10.5px; font-variant-numeric:tabular-nums; text-align:right;
+}
+.telemetry dt{ color:var(--muted); letter-spacing:.08em; text-transform:uppercase; }
+.telemetry dd{ margin:0; color:var(--text); }
+.telemetry dd.hot{ color:var(--brass-bright); }
+
+/* ---- control bar ---- */
+.bar{
+  pointer-events:auto;
+  display:flex; align-items:center; gap:6px;
+  padding:5px; border-radius:12px;
+  background:var(--panel); border:1px solid var(--line);
+  box-shadow:var(--shadow);
+  -webkit-backdrop-filter:blur(14px) saturate(1.3); backdrop-filter:blur(14px) saturate(1.3);
+}
+button{
+  font-family:inherit; font-size:12px; font-weight:600; letter-spacing:.12em; text-transform:uppercase;
+  color:var(--text); background:transparent;
+  border:1px solid transparent; border-radius:8px;
+  padding:9px 15px; min-height:38px; cursor:pointer;
+  transition:background .15s ease, border-color .15s ease, color .15s ease;
+}
+button:hover{ background:var(--line); }
+button:active{ background:var(--line-strong); }
+button[aria-pressed="true"]{ color:var(--brass-bright); border-color:var(--line-strong); background:var(--line); }
+button:focus-visible{ outline:2px solid var(--brass); outline-offset:2px; }
+
+.tuner{
+  pointer-events:auto;
+  width:min(360px, calc(100vw - 28px));
+  display:none; flex-direction:column; gap:11px;
+  padding:14px 15px; border-radius:12px;
+  background:var(--panel); border:1px solid var(--line); box-shadow:var(--shadow);
+  -webkit-backdrop-filter:blur(14px) saturate(1.3); backdrop-filter:blur(14px) saturate(1.3);
+}
+.tuner.open{ display:flex; }
+.row{ display:grid; grid-template-columns:1fr auto; align-items:baseline; gap:2px 10px; }
+.row label{
+  font-size:11px; font-weight:500; letter-spacing:.14em; text-transform:uppercase; color:var(--muted);
+}
+.row output{
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size:11px; font-variant-numeric:tabular-nums; color:var(--text);
+}
+.row input{ grid-column:1 / -1; }
+
+input[type=range]{
+  -webkit-appearance:none; appearance:none;
+  width:100%; height:22px; margin:0; background:transparent; cursor:pointer;
+}
+input[type=range]::-webkit-slider-runnable-track{
+  height:2px; border-radius:1px; background:var(--line-strong);
+}
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none; appearance:none;
+  width:18px; height:18px; margin-top:-8px; border-radius:50%;
+  background:var(--brass); border:2px solid var(--panel-solid);
+  box-shadow:0 1px 3px rgba(0,0,0,.4);
+}
+input[type=range]::-moz-range-track{ height:2px; border-radius:1px; background:var(--line-strong); border:none; }
+input[type=range]::-moz-range-thumb{
+  width:16px; height:16px; border-radius:50%;
+  background:var(--brass); border:2px solid var(--panel-solid);
+}
+input[type=range]:focus-visible{ outline:2px solid var(--brass); outline-offset:4px; border-radius:4px; }
+
+.hint{
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size:10.5px; letter-spacing:.06em; text-transform:uppercase;
+  color:var(--muted); text-align:center;
+  transition:opacity .5s ease;
+}
+.hint.gone{ opacity:0; }
+
+#fallback{
+  position:fixed; inset:0; z-index:5; display:none;
+  place-content:center; padding:32px; text-align:center;
+  background:var(--ink); color:var(--text);
+}
+#fallback.show{ display:grid; }
+#fallback p{ max-width:34ch; margin:0 auto; line-height:1.6; color:var(--muted); font-size:15px; }
+#fallback strong{ display:block; margin-bottom:10px; color:var(--text);
+  font-size:15px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; }
+
+@media (prefers-reduced-motion: reduce){
+  *{ transition-duration:.01ms !important; }
+}
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="gl" aria-label="Interactive physics simulation: a brass ball inside an open-topped glass box"></canvas></div>
+
+<div class="hud tl">
+  <div class="plate">
+    <h1>Ball in a Glass Box</h1>
+    <div class="rule"></div>
+    <p>WebGL &middot; rigid body &middot; 240&nbsp;Hz</p>
+  </div>
+</div>
+
+<div class="hud tr">
+  <dl class="telemetry">
+    <dt>Ball</dt><dd id="tSpeed">0.00 m/s</dd>
+    <dt>Impact</dt><dd id="tHit">0.00 m/s</dd>
+    <dt>Spin</dt><dd id="tSpin">0.0 r/s</dd>
+    <dt>Frame</dt><dd id="tFps">60 fps</dd>
+  </dl>
+</div>
+
+<div class="hud bc">
+  <p class="hint" id="hint">Drag to move the box &middot; two fingers for depth</p>
+  <div class="tuner" id="tuner">
+    <div class="row">
+      <label for="sG">Gravity</label><output id="oG">9.8 m/s&sup2;</output>
+      <input id="sG" type="range" min="0" max="26" step="0.2" value="9.8">
+    </div>
+    <div class="row">
+      <label for="sE">Bounce</label><output id="oE">0.52</output>
+      <input id="sE" type="range" min="0" max="0.92" step="0.01" value="0.52">
+    </div>
+    <div class="row">
+      <label for="sF">Friction</label><output id="oF">0.34</output>
+      <input id="sF" type="range" min="0" max="1" step="0.01" value="0.34">
+    </div>
+  </div>
+  <div class="bar">
+    <button id="bReset" type="button">Reset</button>
+    <button id="bTune" type="button" aria-pressed="false" aria-controls="tuner">Tune</button>
+  </div>
+</div>
+
+<div id="fallback">
+  <div>
+    <strong>WebGL unavailable</strong>
+    <p id="fallbackMsg">This browser could not start a WebGL context. Try Safari or Chrome with hardware acceleration enabled.</p>
+  </div>
+</div>
+
+<script>
+"use strict";
+(function () {
+
+/* =========================================================================
+   Ball in a Glass Box
+   Raw WebGL 1.0, no libraries. A brass test mass tumbles inside an
+   open-topped acrylic box that the viewer drags around by touch.
+
+   Sim runs at a fixed 240 Hz on its own accumulator, decoupled from the
+   frame rate. Contacts are sphere-vs-AABB against the five wall slabs, in
+   the box's local frame, so the rim, the outer faces and the inside all
+   collide correctly and the ball can genuinely be thrown out of the top.
+   ========================================================================= */
+
+/* ---------------------------------------------------------------- config */
+var CFG = {
+  hx: 0.74, hy: 0.58, hz: 0.50,   // interior half-extents (metres)
+  t : 0.055,                      // wall thickness
+  R : 0.20,                       // ball radius
+  fov: 40 * Math.PI / 180,
+  pitch: 14 * Math.PI / 180,      // camera tilt, looking down into the box
+  frameY: 0.02,                   // world height the camera aims at
+  groundY: -1.14,
+  dragZ: 0.46,
+  follow: 26,                     // box -> finger tracking stiffness (1/s)
+  HZ: 240
+};
+CFG.outW = CFG.hx + CFG.t;
+CFG.outD = CFG.hz + CFG.t;
+CFG.outH = (2 * CFG.hy + CFG.t) * 0.5;
+CFG.outCY = (CFG.hy - (CFG.hy + CFG.t)) * 0.5;   // outer box centre, box-local
+
+var tune = { g: 9.8, e: 0.52, mu: 0.34 };
+
+/* ----------------------------------------------------------- mat4 / mat3 */
+function m4() { return new Float32Array(16); }
+
+function perspective(o, fovy, aspect, near, far) {
+  var f = 1 / Math.tan(fovy * 0.5), nf = 1 / (near - far);
+  o.fill(0);
+  o[0] = f / aspect; o[5] = f; o[10] = (far + near) * nf; o[11] = -1; o[14] = 2 * far * near * nf;
+  return o;
+}
+
+function lookAt(o, ex, ey, ez, cx, cy, cz) {
+  var zx = ex - cx, zy = ey - cy, zz = ez - cz;
+  var l = 1 / Math.hypot(zx, zy, zz); zx *= l; zy *= l; zz *= l;
+  // up = (0,1,0)
+  var xx = zz, xy = 0, xz = -zx;             // cross(up, z)
+  l = Math.hypot(xx, xy, xz);
+  if (l < 1e-6) { xx = 1; xy = 0; xz = 0; } else { l = 1 / l; xx *= l; xy *= l; xz *= l; }
+  var yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
+  o[0] = xx; o[1] = yx; o[2] = zx; o[3] = 0;
+  o[4] = xy; o[5] = yy; o[6] = zy; o[7] = 0;
+  o[8] = xz; o[9] = yz; o[10] = zz; o[11] = 0;
+  o[12] = -(xx * ex + xy * ey + xz * ez);
+  o[13] = -(yx * ex + yy * ey + yz * ez);
+  o[14] = -(zx * ex + zy * ey + zz * ez);
+  o[15] = 1;
+  return o;
+}
+
+function mul(o, a, b) {                       // o = a * b
+  for (var c = 0; c < 4; c++) {
+    var b0 = b[c * 4], b1 = b[c * 4 + 1], b2 = b[c * 4 + 2], b3 = b[c * 4 + 3];
+    o[c * 4]     = a[0] * b0 + a[4] * b1 + a[8]  * b2 + a[12] * b3;
+    o[c * 4 + 1] = a[1] * b0 + a[5] * b1 + a[9]  * b2 + a[13] * b3;
+    o[c * 4 + 2] = a[2] * b0 + a[6] * b1 + a[10] * b2 + a[14] * b3;
+    o[c * 4 + 3] = a[3] * b0 + a[7] * b1 + a[11] * b2 + a[15] * b3;
+  }
+  return o;
+}
+
+// translate * non-uniform scale (axis aligned, no rotation)
+function trs(o, tx, ty, tz, sx, sy, sz) {
+  o.fill(0);
+  o[0] = sx; o[5] = sy; o[10] = sz;
+  o[12] = tx; o[13] = ty; o[14] = tz; o[15] = 1;
+  return o;
+}
+
+// quaternion rotation * uniform scale, then translate
+function qrs(o, q, tx, ty, tz, s) {
+  var x = q[0], y = q[1], z = q[2], w = q[3];
+  var x2 = x + x, y2 = y + y, z2 = z + z;
+  var xx = x * x2, xy = x * y2, xz = x * z2;
+  var yy = y * y2, yz = y * z2, zz = z * z2;
+  var wx = w * x2, wy = w * y2, wz = w * z2;
+  o[0] = (1 - (yy + zz)) * s; o[1] = (xy + wz) * s;       o[2] = (xz - wy) * s;       o[3] = 0;
+  o[4] = (xy - wz) * s;       o[5] = (1 - (xx + zz)) * s; o[6] = (yz + wx) * s;       o[7] = 0;
+  o[8] = (xz + wy) * s;       o[9] = (yz - wx) * s;       o[10] = (1 - (xx + yy)) * s; o[11] = 0;
+  o[12] = tx; o[13] = ty; o[14] = tz; o[15] = 1;
+  return o;
+}
+
+// rotation-only mat3 from a quaternion (the ball's normal matrix)
+function qm3(o, q) {
+  var x = q[0], y = q[1], z = q[2], w = q[3];
+  var x2 = x + x, y2 = y + y, z2 = z + z;
+  var xx = x * x2, xy = x * y2, xz = x * z2;
+  var yy = y * y2, yz = y * z2, zz = z * z2;
+  var wx = w * x2, wy = w * y2, wz = w * z2;
+  o[0] = 1 - (yy + zz); o[1] = xy + wz;       o[2] = xz - wy;
+  o[3] = xy - wz;       o[4] = 1 - (xx + zz); o[5] = yz + wx;
+  o[6] = xz + wy;       o[7] = yz - wx;       o[8] = 1 - (xx + yy);
+  return o;
+}
+
+/* ------------------------------------------------------------ gl context */
+var canvas = document.getElementById("gl");
+var gl = null;
+try {
+  var opts = { antialias: true, alpha: false, depth: true, stencil: false,
+               premultipliedAlpha: false, powerPreference: "high-performance" };
+  gl = canvas.getContext("webgl", opts) || canvas.getContext("experimental-webgl", opts);
+} catch (err) { gl = null; }
+
+if (!gl) {
+  document.getElementById("fallback").classList.add("show");
+  return;
+}
+
+function compile(type, src, label) {
+  var s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    throw new Error(label + ": " + gl.getShaderInfoLog(s));
+  }
+  return s;
+}
+
+function program(vsrc, fsrc, label) {
+  var p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vsrc, label + " vs"));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fsrc, label + " fs"));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    throw new Error(label + " link: " + gl.getProgramInfoLog(p));
+  }
+  // cache every active uniform + attribute location on the program object
+  p.u = {}; p.a = {};
+  var n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS), i, info;
+  for (i = 0; i < n; i++) { info = gl.getActiveUniform(p, i); p.u[info.name] = gl.getUniformLocation(p, info.name); }
+  n = gl.getProgramParameter(p, gl.ACTIVE_ATTRIBUTES);
+  for (i = 0; i < n; i++) { info = gl.getActiveAttrib(p, i); p.a[info.name] = gl.getAttribLocation(p, info.name); }
+  return p;
+}
+
+function mesh(positions, normals, indices) {
+  var m = {
+    pos: gl.createBuffer(), nor: gl.createBuffer(), idx: gl.createBuffer(), count: indices.length
+  };
+  gl.bindBuffer(gl.ARRAY_BUFFER, m.pos);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, m.nor);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(normals), gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, m.idx);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+  return m;
+}
+
+function bindMesh(prog, m) {
+  gl.bindBuffer(gl.ARRAY_BUFFER, m.pos);
+  gl.enableVertexAttribArray(prog.a.aPos);
+  gl.vertexAttribPointer(prog.a.aPos, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, m.nor);
+  gl.enableVertexAttribArray(prog.a.aNor);
+  gl.vertexAttribPointer(prog.a.aNor, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, m.idx);
+}
+
+/* -------------------------------------------------------------- geometry */
+// unit cube, side 1, centred on the origin, outward normals
+function buildCube() {
+  var f = [
+    [ 1, 0, 0], [-1, 0, 0], [0,  1, 0],
+    [ 0,-1, 0], [ 0, 0, 1], [0,  0,-1]
+  ];
+  var P = [], N = [], I = [];
+  for (var k = 0; k < 6; k++) {
+    var n = f[k];
+    // two in-plane axes for this face
+    var ax = [n[1], n[2], n[0]];                 // cyclic shift is always perpendicular here
+    var ay = [n[1] * ax[2] - n[2] * ax[1],       // ay = n x ax, so ax x ay = n (outward winding)
+              n[2] * ax[0] - n[0] * ax[2],
+              n[0] * ax[1] - n[1] * ax[0]];
+    var base = P.length / 3;
+    for (var c = 0; c < 4; c++) {
+      var sx = (c === 0 || c === 3) ? -0.5 : 0.5;
+      var sy = (c < 2) ? -0.5 : 0.5;
+      P.push(n[0] * 0.5 + ax[0] * sx + ay[0] * sy,
+             n[1] * 0.5 + ax[1] * sx + ay[1] * sy,
+             n[2] * 0.5 + ax[2] * sx + ay[2] * sy);
+      N.push(n[0], n[1], n[2]);
+    }
+    I.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  }
+  return mesh(P, N, I);
+}
+
+// unit-radius UV sphere
+function buildSphere(segU, segV) {
+  var P = [], N = [], I = [], u, v;
+  for (v = 0; v <= segV; v++) {
+    var phi = v / segV * Math.PI, sp = Math.sin(phi), cp = Math.cos(phi);
+    for (u = 0; u <= segU; u++) {
+      var th = u / segU * Math.PI * 2, st = Math.sin(th), ct = Math.cos(th);
+      var x = sp * ct, y = cp, z = sp * st;
+      P.push(x, y, z); N.push(x, y, z);
+    }
+  }
+  for (v = 0; v < segV; v++) {
+    for (u = 0; u < segU; u++) {
+      var a = v * (segU + 1) + u, b = a + segU + 1;
+      I.push(a, b, a + 1, a + 1, b, b + 1);
+    }
+  }
+  return mesh(P, N, I);
+}
+
+// flat quad in the XZ plane, side 1, +Y normal
+function buildPlane() {
+  return mesh(
+    [-0.5, 0, -0.5,  0.5, 0, -0.5,  0.5, 0, 0.5, -0.5, 0, 0.5],
+    [0, 1, 0,  0, 1, 0,  0, 1, 0,  0, 1, 0],
+    [0, 2, 1, 0, 3, 2]
+  );
+}
+
+var CUBE   = buildCube();
+var SPHERE = buildSphere(56, 34);
+var PLANE  = buildPlane();
+
+/* --------------------------------------------------------------- shaders */
+var VS_LIT = [
+"precision highp float;",
+"attribute vec3 aPos;",
+"attribute vec3 aNor;",
+"uniform mat4 uVP;",
+"uniform mat4 uModel;",
+"uniform mat3 uNMat;",
+"varying vec3 vW;",
+"varying vec3 vN;",
+"varying vec3 vL;",
+"void main(){",
+"  vec4 w = uModel * vec4(aPos, 1.0);",
+"  vW = w.xyz;",
+"  vN = uNMat * aNor;",
+"  vL = aPos;",
+"  gl_Position = uVP * w;",
+"}"
+].join("\n");
+
+var FS_LIT = [
+"precision highp float;",
+"varying vec3 vW;",
+"varying vec3 vN;",
+"varying vec3 vL;",
+"uniform vec3  uCam;",
+"uniform vec3  uBase;",
+"uniform vec3  uTint;",
+"uniform vec3  uScale;",
+"uniform float uAlpha;",
+"uniform float uMode;",     // 0 glass wall | 1 box floor | 2 ball | 3 ground
+"uniform vec3  uKey;",
+"uniform vec3  uFill;",
+"uniform vec3  uLdir;",
+"uniform float uGlow;",
+"uniform vec3  uGlowCol;",
+"uniform vec3  uBallProj;", // box-local x, z, shadow strength  (mode 1)
+"uniform vec4  uBoxProj;",  // world x, z, softness, strength   (mode 3)
+"uniform vec2  uBoxHalf;",  // box footprint half-extents       (mode 3)
+"uniform float uR;",
+"",
+"vec3 shoulder(vec3 c){",
+"  vec3 k = vec3(0.82);",
+"  vec3 d = max(c - k, vec3(0.0));",
+"  return min(c, k) + d / (1.0 + d / (1.0 - k));",
+"}",
+"",
+"void main(){",
+"  vec3 N = normalize(vN);",
+"  vec3 V = normalize(uCam - vW);",
+"  vec3 L = normalize(uLdir);",
+"  vec3 H = normalize(L + V);",
+"  float ndl = max(dot(N, L), 0.0);",
+"  float ndv = max(dot(N, V), 0.0);",
+"  float ndh = max(dot(N, H), 0.0);",
+"  float fres = pow(1.0 - ndv, 3.0);",
+"  vec3  lp = vL * uScale;",
+"  vec3  col;",
+"  float alpha = uAlpha;",
+"",
+"  if (uMode < 0.5) {",
+/* ---- acrylic wall: thin, mostly transparent, bright at grazing angles */
+"    float spec = pow(ndh, 120.0);",
+"    col  = uBase * uFill * 0.90;",
+"    col += uBase * uKey * ndl * 0.32;",
+"    col += uKey * spec * 1.30;",
+"    col += uBase * fres * 0.70;",
+"    col += uGlowCol * uGlow * (0.35 + 0.9 * fres);",
+"    alpha = clamp(uAlpha + fres * 0.46 + spec * 0.60 + ndl * 0.24 + uGlow * 0.30, 0.0, 1.0);",
+"",
+"  } else if (uMode < 1.5) {",
+/* ---- box floor: milled plate with a fine grid, plus the ball's shadow */
+"    vec3 albedo = uBase;",
+"    if (N.y > 0.5) {",
+"      vec2 q = abs(fract(lp.xz / 0.148 - 0.5) - 0.5) * 0.148;",
+"      float d = min(q.x, q.y);",
+"      float line = 1.0 - smoothstep(0.0035, 0.0125, d);",
+"      albedo = mix(albedo, uTint, line * 0.42);",
+"      float bd = length(lp.xz - uBallProj.xy);",
+"      float sh = (1.0 - smoothstep(uR * 0.55, uR * 2.05, bd)) * uBallProj.z;",
+"      albedo *= mix(1.0, 0.30, sh);",
+"    }",
+"    col  = albedo * (uFill * (0.40 + 0.60 * max(N.y, 0.0)) * 0.90 + uKey * ndl * 1.02);",
+"    col += uKey * pow(ndh, 34.0) * 0.12;",
+"    col += uGlowCol * uGlow * 0.5;",
+"",
+"  } else if (uMode < 2.5) {",
+/* ---- brass reference sphere: three orthogonal great circles so spin reads */
+"    vec3 p = normalize(vL);",
+"    float b = max(max(smoothstep(0.098, 0.052, abs(p.y)),",
+"                      smoothstep(0.098, 0.052, abs(p.x))),",
+"                      smoothstep(0.098, 0.052, abs(p.z)));",
+"    vec3 albedo = mix(uBase, uTint, b);",
+"    float sheen = 0.5 + 0.5 * N.y;",
+"    col  = albedo * (uFill * (0.30 + 0.70 * sheen) * 0.80 + uKey * ndl * 1.32);",
+"    col += uKey * pow(ndh, 30.0) * 1.45 * (1.0 - b * 0.70);",
+"    col += uBase * fres * 0.32;",
+"",
+"  } else {",
+/* ---- studio ground: a soft pool of light carrying the box's cast shadow */
+"    float r = length(vW.xz - vec2(0.0)) / max(uScale.x * 0.5, 0.001);",
+"    float pool = 1.0 - smoothstep(0.10, 0.92, r);",
+"    vec2 d = abs(vW.xz - uBoxProj.xy) - uBoxHalf;",
+"    float sd = length(max(d, vec2(0.0))) + min(max(d.x, d.y), 0.0);",
+"    float sh = (1.0 - smoothstep(-uBoxProj.z * 0.30, uBoxProj.z, sd)) * uBoxProj.w;",
+"    col = mix(uBase, uTint, sh);",
+"    alpha = pool * mix(uAlpha, 1.0, sh * 0.8);",
+"  }",
+"",
+"  gl_FragColor = vec4(shoulder(col), alpha);",
+"}"
+].join("\n");
+
+var VS_BG = [
+"precision highp float;",
+"attribute vec2 aPos;",
+"varying vec2 vUv;",
+"void main(){ vUv = aPos * 0.5 + 0.5; gl_Position = vec4(aPos, 0.0, 1.0); }"
+].join("\n");
+
+var FS_BG = [
+"precision highp float;",
+"varying vec2 vUv;",
+"uniform vec3 uTop;",
+"uniform vec3 uBot;",
+"void main(){",
+"  vec3 c = mix(uBot, uTop, pow(clamp(vUv.y, 0.0, 1.0), 0.85));",
+"  float v = distance(vUv, vec2(0.5, 0.55));",
+"  c *= 1.0 - smoothstep(0.28, 0.95, v) * 0.42;",
+"  gl_FragColor = vec4(c, 1.0);",
+"}"
+].join("\n");
+
+var progLit, progBg, bgBuf;
+try {
+  progLit = program(VS_LIT, FS_LIT, "lit");
+  progBg  = program(VS_BG, FS_BG, "bg");
+} catch (err) {
+  document.getElementById("fallbackMsg").textContent =
+    "This browser started WebGL but rejected the shaders. " + err.message;
+  document.getElementById("fallback").classList.add("show");
+  return;
+}
+bgBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, bgBuf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+
+/* ------------------------------------------------------- palette binding */
+// The scene reads its colours from the same CSS custom properties as the
+// chrome, so the 3D view follows the viewer's light/dark theme.
+var PAL = {};
+var css = getComputedStyle(document.documentElement);
+
+function rgb(name, fallback) {
+  var v = css.getPropertyValue(name).trim() || fallback;
+  var m;
+  if (v.charAt(0) === "#") {
+    if (v.length === 4) v = "#" + v[1] + v[1] + v[2] + v[2] + v[3] + v[3];
+    return [parseInt(v.substr(1, 2), 16) / 255,
+            parseInt(v.substr(3, 2), 16) / 255,
+            parseInt(v.substr(5, 2), 16) / 255];
+  }
+  m = v.match(/[\d.]+/g);
+  if (m && m.length >= 3) return [+m[0] / 255, +m[1] / 255, +m[2] / 255];
+  return [0.5, 0.5, 0.5];
+}
+
+function readPalette() {
+  css = getComputedStyle(document.documentElement);
+  PAL.top   = rgb("--scene-top",  "#18232B");
+  PAL.bot   = rgb("--scene-bot",  "#070A0D");
+  PAL.ballA = rgb("--ball-a",     "#E0A03C");
+  PAL.ballB = rgb("--ball-b",     "#2A2118");
+  PAL.wall  = rgb("--wall",       "#8FC6DA");
+  PAL.floor = rgb("--floor",      "#C9D6DC");
+  PAL.fline = rgb("--floorline",  "#6E8894");
+  PAL.grnd  = rgb("--ground",     "#121A20");
+  PAL.shade = rgb("--shade",      "#03060A");
+  PAL.key   = rgb("--key",        "#FFEBCB");
+  PAL.fill  = rgb("--fill",       "#39566A");
+  PAL.brass = rgb("--brass-bright", "#F6BE5E");
+  PAL.wallA = parseFloat(css.getPropertyValue("--wall-a")) || 0.13;
+}
+readPalette();
+
+var dark = window.matchMedia("(prefers-color-scheme: dark)");
+if (dark.addEventListener) dark.addEventListener("change", readPalette);
+else if (dark.addListener) dark.addListener(readPalette);
+new MutationObserver(readPalette).observe(document.documentElement,
+  { attributes: true, attributeFilter: ["data-theme", "style", "class"] });
+
+/* ------------------------------------------------------------- wall slabs */
+// Five AABBs in the box's local frame. The same list drives both rendering
+// and collision, so what you see is exactly what the ball hits.
+var hx = CFG.hx, hy = CFG.hy, hz = CFG.hz, t = CFG.t;
+function slab(x0, x1, y0, y1, z0, z1) {
+  return {
+    min: [x0, y0, z0], max: [x1, y1, z1],
+    c:   [(x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2],
+    s:   [x1 - x0, y1 - y0, z1 - z0],
+    glow: 0
+  };
+}
+var FLOOR = slab(-hx - t, hx + t, -hy - t, -hy,    -hz - t, hz + t);
+var WALLS = [
+  slab(-hx - t, -hx,    -hy - t, hy,  -hz - t, hz + t),   // -X
+  slab( hx,      hx + t, -hy - t, hy,  -hz - t, hz + t),  // +X
+  slab(-hx,      hx,     -hy - t, hy,  -hz - t, -hz),     // -Z (back)
+  slab(-hx,      hx,     -hy - t, hy,   hz,     hz + t)   // +Z (front)
+];
+var SLABS = WALLS.concat([FLOOR]);
+
+/* ------------------------------------------------------------------ state */
+var box  = { x: 0, y: 0.12, z: 0, vx: 0, vy: 0, vz: 0 };
+var goal = { x: 0, y: 0.12, z: 0 };   // smoothed target the box chases
+var want = { x: 0, y: 0.12, z: 0 };   // raw finger-derived target
+var ball = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0,
+             q: new Float32Array([0, 0, 0, 1]), wx: 0, wy: 0, wz: 0 };
+var lastHit = 0, hitDecay = 0, outside = 0, returned = 0;
+
+function resetBall(kick) {
+  ball.x = box.x + 0.22;  ball.y = box.y + 0.26;  ball.z = box.z - 0.08;
+  ball.vx = kick ? 1.5 : 0; ball.vy = 0; ball.vz = kick ? -0.5 : 0;
+  ball.q[0] = ball.q[1] = ball.q[2] = 0; ball.q[3] = 1;
+  ball.wx = 0; ball.wy = kick ? 2.5 : 0; ball.wz = 0;
+  outside = 0;
+}
+resetBall(true);
+
+/* ---------------------------------------------------------------- physics */
+var INV_I = 5 / (2 * CFG.R * CFG.R);   // solid sphere: I = (2/5) m R^2, unit mass
+var TAN_M = 2 / 7;                     // tangential effective mass at a contact
+
+// Resolves one contact and returns the closing speed it saw (0 if separating),
+// which drives the per-wall impact flash.
+function contact(nx, ny, nz, pen) {
+  // positional correction first, so the ball never visibly sinks into a wall
+  ball.x += nx * pen; ball.y += ny * pen; ball.z += nz * pen;
+
+  var rvx = ball.vx - box.vx, rvy = ball.vy - box.vy, rvz = ball.vz - box.vz;
+  var rcx = -nx * CFG.R, rcy = -ny * CFG.R, rcz = -nz * CFG.R;
+
+  // velocity of the ball's surface at the contact point (spin included)
+  var cvx = rvx + (ball.wy * rcz - ball.wz * rcy);
+  var cvy = rvy + (ball.wz * rcx - ball.wx * rcz);
+  var cvz = rvz + (ball.wx * rcy - ball.wy * rcx);
+
+  var vn = cvx * nx + cvy * ny + cvz * nz;
+  if (vn >= 0) return 0;                          // already separating
+
+  // below a threshold, drop restitution entirely - otherwise a resting ball
+  // trades gravity for a permanent shiver
+  var e = (-vn < 0.55) ? 0 : tune.e;
+  var jn = -(1 + e) * vn;
+  ball.vx += nx * jn; ball.vy += ny * jn; ball.vz += nz * jn;
+
+  // Coulomb friction on the tangential part, capped by what would stop it.
+  // This is what converts a sliding ball into a rolling one.
+  var tvx = cvx - nx * vn, tvy = cvy - ny * vn, tvz = cvz - nz * vn;
+  var tl = Math.hypot(tvx, tvy, tvz);
+  if (tl > 1e-6) {
+    var jt = Math.min(tune.mu * jn, tl * TAN_M);
+    var jx = -tvx / tl * jt, jy = -tvy / tl * jt, jz = -tvz / tl * jt;
+    ball.vx += jx; ball.vy += jy; ball.vz += jz;
+    ball.wx += (rcy * jz - rcz * jy) * INV_I;
+    ball.wy += (rcz * jx - rcx * jz) * INV_I;
+    ball.wz += (rcx * jy - rcy * jx) * INV_I;
+  }
+  return -vn;
+}
+
+// Sphere vs. one axis-aligned slab, in the box's local frame. Because it
+// tests the true closest point, the same routine handles the inner faces,
+// the outer faces, the rim and every edge and corner.
+function collideSlab(s, lx, ly, lz) {
+  var cx = lx < s.min[0] ? s.min[0] : (lx > s.max[0] ? s.max[0] : lx);
+  var cy = ly < s.min[1] ? s.min[1] : (ly > s.max[1] ? s.max[1] : ly);
+  var cz = lz < s.min[2] ? s.min[2] : (lz > s.max[2] ? s.max[2] : lz);
+  var dx = lx - cx, dy = ly - cy, dz = lz - cz;
+  var d2 = dx * dx + dy * dy + dz * dz;
+  if (d2 >= CFG.R * CFG.R) return false;
+
+  var nx, ny, nz, pen;
+  if (d2 > 1e-12) {
+    var d = Math.sqrt(d2);
+    nx = dx / d; ny = dy / d; nz = dz / d;
+    pen = CFG.R - d;
+  } else {
+    // centre swallowed by the slab - eject along the shallowest axis
+    var ox = Math.min(lx - s.min[0], s.max[0] - lx);
+    var oy = Math.min(ly - s.min[1], s.max[1] - ly);
+    var oz = Math.min(lz - s.min[2], s.max[2] - lz);
+    nx = ny = nz = 0;
+    if (ox <= oy && ox <= oz)      { nx = (lx < s.c[0]) ? -1 : 1; pen = ox + CFG.R; }
+    else if (oy <= oz)             { ny = (ly < s.c[1]) ? -1 : 1; pen = oy + CFG.R; }
+    else                           { nz = (lz < s.c[2]) ? -1 : 1; pen = oz + CFG.R; }
+  }
+
+  var speed = contact(nx, ny, nz, pen);
+  if (speed > 0.75) s.glow = Math.min(1, s.glow + speed * 0.30);
+  if (speed > lastHit) { lastHit = speed; hitDecay = 1; }
+  return true;
+}
+
+function step(h) {
+  ball.vy -= tune.g * h;
+
+  var damp = Math.exp(-0.09 * h);          // faint air resistance
+  ball.vx *= damp; ball.vy *= damp; ball.vz *= damp;
+
+  ball.x += ball.vx * h; ball.y += ball.vy * h; ball.z += ball.vz * h;
+
+  var touched = false;
+  for (var pass = 0; pass < 2; pass++) {
+    var lx = ball.x - box.x, ly = ball.y - box.y, lz = ball.z - box.z;
+    for (var i = 0; i < SLABS.length; i++) {
+      if (collideSlab(SLABS[i], lx, ly, lz)) {
+        touched = true;
+        lx = ball.x - box.x; ly = ball.y - box.y; lz = ball.z - box.z;
+      }
+    }
+  }
+
+  if (touched) {
+    var rr = Math.exp(-2.0 * h);           // rolling resistance
+    ball.wx *= rr; ball.wy *= rr; ball.wz *= rr;
+    if (Math.hypot(ball.wx, ball.wy, ball.wz) < 0.05) ball.wx = ball.wy = ball.wz = 0;
+  }
+
+  // integrate orientation: q' = q + 0.5 * (0, w) * q * h
+  var q = ball.q, qx = q[0], qy = q[1], qz = q[2], qw = q[3];
+  var hx2 = ball.wx * h * 0.5, hy2 = ball.wy * h * 0.5, hz2 = ball.wz * h * 0.5;
+  q[0] = qx + (hy2 * qz - hz2 * qy + hx2 * qw);
+  q[1] = qy + (hz2 * qx - hx2 * qz + hy2 * qw);
+  q[2] = qz + (hx2 * qy - hy2 * qx + hz2 * qw);
+  q[3] = qw - (hx2 * qx + hy2 * qy + hz2 * qz);
+  var n = 1 / (Math.hypot(q[0], q[1], q[2], q[3]) || 1);
+  q[0] *= n; q[1] *= n; q[2] *= n; q[3] *= n;
+}
+
+/* ------------------------------------------------------- camera + framing */
+var IDENT3 = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+var view = m4(), proj = m4(), vp = m4(), model = m4();
+var ballN = new Float32Array(9);
+var GSIZE = 9.5;
+var LDIR = (function () { var v = [-0.42, 0.86, 0.48], l = 1 / Math.hypot(v[0], v[1], v[2]);
+                          return [v[0] * l, v[1] * l, v[2] * l]; })();
+
+var cam = { dist: 4, ex: 0, ey: 1, ez: 4, wpp: 0.002 };
+var bounds = { x: 0.8, up: 0.8, dn: 0.4, z: CFG.dragZ };
+var W = 1, H = 1, cssH = 1;
+
+// uniform locations, defaulted to null so an optimised-out name is a no-op
+function L(p, n) { return (p.u[n] === undefined) ? null : p.u[n]; }
+var LU = {}, BU = {};
+["uVP","uModel","uNMat","uCam","uBase","uTint","uScale","uAlpha","uMode","uKey",
+ "uFill","uLdir","uGlow","uGlowCol","uBallProj","uBoxProj","uBoxHalf","uR"]
+  .forEach(function (n) { LU[n] = L(progLit, n); });
+["uTop","uBot"].forEach(function (n) { BU[n] = L(progBg, n); });
+
+function clampWant() {
+  want.x = Math.max(-bounds.x,  Math.min(bounds.x,  want.x));
+  want.y = Math.max(-bounds.dn, Math.min(bounds.up, want.y));
+  want.z = Math.max(-bounds.z,  Math.min(bounds.z,  want.z));
+}
+
+function resize() {
+  var dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+  var cw = canvas.clientWidth || window.innerWidth;
+  var ch = canvas.clientHeight || window.innerHeight;
+  cssH = ch;
+  W = Math.max(1, Math.round(cw * dpr));
+  H = Math.max(1, Math.round(ch * dpr));
+  if (canvas.width !== W)  canvas.width = W;
+  if (canvas.height !== H) canvas.height = H;
+
+  var aspect = W / H, tanH = Math.tan(CFG.fov * 0.5);
+  // pull back far enough to frame the box plus room to drag it, but never so
+  // far on a narrow portrait screen that the box becomes a speck
+  var need = Math.max((CFG.outH + 0.62) / tanH, (CFG.outW + 0.40) / (aspect * tanH));
+  cam.dist = Math.min(Math.max(need, 3.4), 6.4);
+
+  var visH = cam.dist * tanH, visW = visH * aspect;
+  // the box may hang a little off-screen at the extremes - that is nicer than
+  // a cramped drag range on a phone held upright
+  bounds.x  = Math.min(1.15, Math.max(0.20, visW - CFG.outW * 0.70));
+  bounds.up = Math.min(1.25, Math.max(0.12, CFG.frameY + visH - CFG.outH * 0.70 - 0.06));
+  bounds.dn = Math.min(0.46, Math.max(0.10, visH - CFG.frameY - CFG.outH * 0.70 - 0.06));
+
+  cam.ex = 0;
+  cam.ey = CFG.frameY + cam.dist * Math.sin(CFG.pitch);
+  cam.ez = cam.dist * Math.cos(CFG.pitch);
+  cam.wpp = (2 * cam.dist * tanH) / ch;     // world units per CSS pixel at the box
+
+  perspective(proj, CFG.fov, aspect, 0.1, 60);
+  lookAt(view, cam.ex, cam.ey, cam.ez, 0, CFG.frameY, 0);
+  mul(vp, proj, view);
+  clampWant();
+}
+
+/* ------------------------------------------------------------------ input */
+var stage = document.getElementById("stage");
+var hint  = document.getElementById("hint");
+var ptrs  = new Map();
+var anchor = null;
+var COSP = Math.cos(CFG.pitch);
+
+function centroid() {
+  var x = 0, y = 0;
+  ptrs.forEach(function (p) { x += p.x; y += p.y; });
+  var n = ptrs.size || 1;
+  return { x: x / n, y: y / n, n: ptrs.size };
+}
+function reanchor() {
+  var c = centroid();
+  anchor = { cx: c.x, cy: c.y, n: c.n, wx: want.x, wy: want.y, wz: want.z };
+}
+function dismissHint() { if (hint && !hint.classList.contains("gone")) hint.classList.add("gone"); }
+
+stage.addEventListener("pointerdown", function (e) {
+  if (e.target.closest && e.target.closest(".bar, .tuner")) return;
+  ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (stage.setPointerCapture) { try { stage.setPointerCapture(e.pointerId); } catch (err) {} }
+  reanchor();
+  dismissHint();
+  e.preventDefault();
+});
+
+stage.addEventListener("pointermove", function (e) {
+  if (!ptrs.has(e.pointerId) || !anchor) return;
+  ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  var c = centroid();
+  if (c.n !== anchor.n) { reanchor(); return; }
+  var dx = (c.x - anchor.cx) * cam.wpp;
+  var dy = (c.y - anchor.cy) * cam.wpp;
+  want.x = anchor.wx + dx;
+  if (anchor.n >= 2) {
+    want.y = anchor.wy;
+    want.z = anchor.wz + dy;          // two fingers slide the box in depth
+  } else {
+    want.y = anchor.wy - dy / COSP;   // undo the camera tilt so drag feels 1:1
+    want.z = anchor.wz;
+  }
+  clampWant();
+  e.preventDefault();
+});
+
+function liftPointer(e) {
+  if (!ptrs.has(e.pointerId)) return;
+  ptrs.delete(e.pointerId);
+  if (ptrs.size) reanchor(); else anchor = null;
+}
+stage.addEventListener("pointerup", liftPointer);
+stage.addEventListener("pointercancel", liftPointer);
+
+stage.addEventListener("wheel", function (e) {
+  want.z += e.deltaY * cam.wpp * 0.55;
+  clampWant(); dismissHint(); e.preventDefault();
+}, { passive: false });
+
+// keyboard equivalent, so the demo is not touch-only
+stage.tabIndex = 0;
+stage.addEventListener("keydown", function (e) {
+  var s = e.shiftKey ? 0.12 : 0.06, used = true;
+  if      (e.key === "ArrowLeft")  want.x -= s;
+  else if (e.key === "ArrowRight") want.x += s;
+  else if (e.key === "ArrowUp")    { if (e.shiftKey) want.z -= s; else want.y += s; }
+  else if (e.key === "ArrowDown")  { if (e.shiftKey) want.z += s; else want.y -= s; }
+  else used = false;
+  if (used) { clampWant(); dismissHint(); e.preventDefault(); }
+});
+
+// stop Safari from scrolling, rubber-banding or pinch-zooming the page
+document.addEventListener("touchmove", function (e) { e.preventDefault(); }, { passive: false });
+["gesturestart", "gesturechange", "gestureend"].forEach(function (n) {
+  document.addEventListener(n, function (e) { e.preventDefault(); });
+});
+
+/* -------------------------------------------------------------------- HUD */
+var tSpeed = document.getElementById("tSpeed"), tHit = document.getElementById("tHit");
+var tSpin  = document.getElementById("tSpin"),  tFps = document.getElementById("tFps");
+var tuner  = document.getElementById("tuner"),  bTune = document.getElementById("bTune");
+
+document.getElementById("bReset").addEventListener("click", function () {
+  want.x = 0; want.y = 0.12; want.z = 0;
+  goal.x = box.x = 0; goal.y = box.y = 0.12; goal.z = box.z = 0;
+  box.vx = box.vy = box.vz = 0;
+  resetBall(true);
+  lastHit = 0;
+});
+
+bTune.addEventListener("click", function () {
+  var open = tuner.classList.toggle("open");
+  bTune.setAttribute("aria-pressed", open ? "true" : "false");
+});
+
+function slider(id, out, key, fmt) {
+  var el = document.getElementById(id), o = document.getElementById(out);
+  function sync() { tune[key] = parseFloat(el.value); o.textContent = fmt(tune[key]); }
+  el.addEventListener("input", sync);
+  sync();
+}
+slider("sG", "oG", "g",  function (v) { return v.toFixed(1) + " m/s²"; });
+slider("sE", "oE", "e",  function (v) { return v.toFixed(2); });
+slider("sF", "oF", "mu", function (v) { return v.toFixed(2); });
+
+/* ------------------------------------------------------------------- draw */
+function setObj(mode, base, tint, sx, sy, sz, alpha, glow) {
+  gl.uniform1f(LU.uMode, mode);
+  gl.uniform3fv(LU.uBase, base);
+  gl.uniform3fv(LU.uTint, tint);
+  gl.uniform3f(LU.uScale, sx, sy, sz);
+  gl.uniform1f(LU.uAlpha, alpha);
+  gl.uniform1f(LU.uGlow, glow);
+}
+
+var order = [0, 1, 2, 3], key = [0, 0, 0, 0];
+
+function draw() {
+  gl.viewport(0, 0, W, H);
+
+  /* backdrop: a full-screen triangle, no depth involvement */
+  gl.disable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE); gl.disable(gl.BLEND);
+  gl.depthMask(false);
+  gl.useProgram(progBg);
+  gl.bindBuffer(gl.ARRAY_BUFFER, bgBuf);
+  gl.enableVertexAttribArray(progBg.a.aPos);
+  gl.vertexAttribPointer(progBg.a.aPos, 2, gl.FLOAT, false, 0, 0);
+  gl.uniform3fv(BU.uTop, PAL.top);
+  gl.uniform3fv(BU.uBot, PAL.bot);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  gl.depthMask(true);
+  gl.clear(gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK);
+
+  gl.useProgram(progLit);
+  gl.uniformMatrix4fv(LU.uVP, false, vp);
+  gl.uniform3f(LU.uCam, cam.ex, cam.ey, cam.ez);
+  gl.uniform3fv(LU.uKey, PAL.key);
+  gl.uniform3fv(LU.uFill, PAL.fill);
+  gl.uniform3fv(LU.uGlowCol, PAL.brass);
+  gl.uniform3f(LU.uLdir, LDIR[0], LDIR[1], LDIR[2]);
+  gl.uniform1f(LU.uR, CFG.R);
+  // every cube/plane here is axis-aligned, so an identity normal matrix is
+  // exact once the fragment shader renormalises
+  gl.uniformMatrix3fv(LU.uNMat, false, IDENT3);
+
+  /* studio ground with the box's cast shadow */
+  // shadow softness follows the gap under the box, so setting it down on the
+  // floor tightens the contact instead of leaving a permanent soft blob
+  var gap = Math.max(0.02, box.y - (CFG.hy + CFG.t) - CFG.groundY);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.uniform4f(LU.uBoxProj, box.x, box.z, 0.06 + gap * 0.44,
+               Math.max(0.05, Math.min(0.78, 0.78 - gap * 0.46)));
+  gl.uniform2f(LU.uBoxHalf, CFG.outW * 0.92, CFG.outD * 0.92);
+  trs(model, 0, CFG.groundY, 0, GSIZE, 1, GSIZE);
+  gl.uniformMatrix4fv(LU.uModel, false, model);
+  setObj(3, PAL.grnd, PAL.shade, GSIZE, 1, GSIZE, 0.88, 0);
+  bindMesh(progLit, PLANE);
+  gl.drawElements(gl.TRIANGLES, PLANE.count, gl.UNSIGNED_SHORT, 0);
+
+  gl.disable(gl.BLEND);
+
+  /* box floor - opaque, and it carries the ball's contact shadow */
+  var lx = ball.x - box.x, ly = ball.y - box.y, lz = ball.z - box.z;
+  var above = Math.max(0, ly - (-CFG.hy + CFG.R));
+  var bshade = Math.max(0, 1 - above / 1.05) * 0.9;
+  if (Math.abs(lx) > CFG.hx + 0.3 || Math.abs(lz) > CFG.hz + 0.3) bshade = 0;
+  gl.uniform3f(LU.uBallProj, lx, lz, bshade);
+
+  trs(model, box.x + FLOOR.c[0], box.y + FLOOR.c[1], box.z + FLOOR.c[2],
+      FLOOR.s[0], FLOOR.s[1], FLOOR.s[2]);
+  gl.uniformMatrix4fv(LU.uModel, false, model);
+  setObj(1, PAL.floor, PAL.fline, FLOOR.s[0], FLOOR.s[1], FLOOR.s[2], 1, FLOOR.glow);
+  bindMesh(progLit, CUBE);
+  gl.drawElements(gl.TRIANGLES, CUBE.count, gl.UNSIGNED_SHORT, 0);
+
+  /* the ball - its own orientation supplies the normal matrix */
+  qrs(model, ball.q, ball.x, ball.y, ball.z, CFG.R);
+  qm3(ballN, ball.q);
+  gl.uniformMatrix4fv(LU.uModel, false, model);
+  gl.uniformMatrix3fv(LU.uNMat, false, ballN);
+  setObj(2, PAL.ballA, PAL.ballB, 1, 1, 1, 1, 0);
+  bindMesh(progLit, SPHERE);
+  gl.drawElements(gl.TRIANGLES, SPHERE.count, gl.UNSIGNED_SHORT, 0);
+  gl.uniformMatrix3fv(LU.uNMat, false, IDENT3);
+
+  /* glass walls last, back to front, blended and not writing depth */
+  var i, j, w;
+  for (i = 0; i < 4; i++) {
+    w = WALLS[i];
+    var ddx = box.x + w.c[0] - cam.ex, ddy = box.y + w.c[1] - cam.ey, ddz = box.z + w.c[2] - cam.ez;
+    key[i] = ddx * ddx + ddy * ddy + ddz * ddz;
+    order[i] = i;
+  }
+  for (i = 1; i < 4; i++) {                       // insertion sort, farthest first
+    var oi = order[i], ki = key[oi];
+    for (j = i - 1; j >= 0 && key[order[j]] < ki; j--) order[j + 1] = order[j];
+    order[j + 1] = oi;
+  }
+
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.depthMask(false);
+  bindMesh(progLit, CUBE);
+  for (i = 0; i < 4; i++) {
+    w = WALLS[order[i]];
+    trs(model, box.x + w.c[0], box.y + w.c[1], box.z + w.c[2], w.s[0], w.s[1], w.s[2]);
+    gl.uniformMatrix4fv(LU.uModel, false, model);
+    setObj(0, PAL.wall, PAL.wall, w.s[0], w.s[1], w.s[2], PAL.wallA, w.glow);
+    gl.drawElements(gl.TRIANGLES, CUBE.count, gl.UNSIGNED_SHORT, 0);
+  }
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+}
+
+/* -------------------------------------------------------------- main loop */
+var last = 0, acc = 0, fpsT = 0, fpsN = 0, fps = 60, teleT = 0;
+
+function tick(now) {
+  requestAnimationFrame(tick);
+
+  if (!last) { last = now; return; }
+  var dt = (now - last) / 1000;
+  last = now;
+  if (dt <= 0) return;
+  if (dt > 0.1) dt = 0.1;                         // returning from a hidden tab
+
+  fpsT += dt; fpsN++;
+
+  // the box eases toward the finger: responsive, but it filters out the
+  // single-frame jitter that would otherwise fire huge wall impulses
+  var k = 1 - Math.exp(-CFG.follow * dt);
+  goal.x += (want.x - goal.x) * k;
+  goal.y += (want.y - goal.y) * k;
+  goal.z += (want.z - goal.z) * k;
+
+  acc += dt;
+  var h = 1 / CFG.HZ;
+  var n = Math.floor(acc / h);
+  if (n > 48) { n = 48; acc = 0; } else { acc -= n * h; }
+
+  if (n > 0) {
+    var dx = (goal.x - box.x) / n, dy = (goal.y - box.y) / n, dz = (goal.z - box.z) / n;
+    // never let a wall travel more than a fraction of the ball's radius in one
+    // substep - that is what makes tunnelling impossible rather than unlikely
+    var mag = Math.hypot(dx, dy, dz), cap = CFG.R * 0.45;
+    if (mag > cap) { var f = cap / mag; dx *= f; dy *= f; dz *= f; }
+    box.vx = dx / h; box.vy = dy / h; box.vz = dz / h;
+    for (var i = 0; i < n; i++) {
+      box.x += dx; box.y += dy; box.z += dz;
+      step(h);
+    }
+  }
+
+  // the ball can genuinely be thrown out of the open top; fetch it back once
+  // it is clearly gone rather than pretending there is a lid
+  var lx = ball.x - box.x, ly = ball.y - box.y, lz = ball.z - box.z;
+  var inBox = Math.abs(lx) < CFG.hx && Math.abs(lz) < CFG.hz && ly < CFG.hy;
+  outside = inBox ? 0 : outside + dt;
+  if (outside > 3 || ball.y < CFG.groundY - 0.6 ||
+      Math.abs(ball.x) > 14 || Math.abs(ball.z) > 14) {
+    resetBall(false);
+    returned = 1.1;
+  }
+  if (returned > 0) returned -= dt;
+
+  var fade = Math.exp(-5.5 * dt);
+  for (var s = 0; s < SLABS.length; s++) SLABS[s].glow *= fade;
+  lastHit *= Math.exp(-0.85 * dt);
+  hitDecay *= Math.exp(-2.2 * dt);
+
+  draw();
+
+  teleT += dt;
+  if (teleT > 0.12) {
+    teleT = 0;
+    if (fpsT > 0.45) { fps = fpsN / fpsT; fpsT = 0; fpsN = 0; }
+    var sp = Math.hypot(ball.vx, ball.vy, ball.vz);
+    tSpeed.textContent = returned > 0 ? "returned" : sp.toFixed(2) + " m/s";
+    tSpeed.className = returned > 0 ? "hot" : "";
+    tHit.textContent = lastHit.toFixed(2) + " m/s";
+    tHit.className = hitDecay > 0.25 ? "hot" : "";
+    tSpin.textContent = Math.hypot(ball.wx, ball.wy, ball.wz).toFixed(1) + " r/s";
+    tFps.textContent = Math.round(fps) + " fps";
+  }
+}
+
+/* ------------------------------------------------------------------ start */
+window.addEventListener("resize", resize);
+window.addEventListener("orientationchange", function () { setTimeout(resize, 220); });
+document.addEventListener("visibilitychange", function () { last = 0; acc = 0; });
+
+resize();
+resetBall(true);
+ball.x = box.x; ball.z = box.z;
+requestAnimationFrame(tick);
+
+})();
+</script>
+<!--CONTENT-END-->
+</body>
+</html>
