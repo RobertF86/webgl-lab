@@ -1,0 +1,1470 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#14171A" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#E8EBED" media="(prefers-color-scheme: light)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="description" content="A small polygon modeller in WebGL: sub-object selection, move/rotate/scale, extrude and chamfer.">
+<!--CONTENT-START-->
+<title>Poly Bench</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#E8EBED; --panel:rgba(255,255,255,.86); --panel-solid:#FFFFFF;
+  --line:rgba(20,30,36,.16); --line-strong:rgba(20,30,36,.32);
+  --text:#12191D; --muted:#576870;
+  --sel:#A8620B; --sel-hot:#C4780F;
+  --axX:#C0392B; --axY:#3B8A1C; --axZ:#2A6FB5;
+  --shadow:0 1px 2px rgba(10,20,26,.10), 0 10px 26px rgba(10,20,26,.10);
+  --vp-top:#F1F4F5; --vp-bot:#C6CFD3;
+  --surf:#C7D0D5; --surf-back:#9DA9AF; --wire:#63727A; --pt:#7E8C93;
+  --grid:#B3BFC4; --key:#FFF6EA; --fill:#A8BAC3;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#14171A; --panel:rgba(26,31,35,.84); --panel-solid:#1A1F23;
+    --line:rgba(150,180,195,.15); --line-strong:rgba(150,180,195,.32);
+    --text:#E2E7EA; --muted:#7C888F;
+    --sel:#FFB020; --sel-hot:#FFC44D;
+    --axX:#E5533D; --axY:#7CC93D; --axZ:#4A9BE8;
+    --shadow:0 1px 2px rgba(0,0,0,.42), 0 12px 30px rgba(0,0,0,.48);
+    --vp-top:#1E262B; --vp-bot:#0B0E11;
+    --surf:#AEB8BE; --surf-back:#6E777D; --wire:#4E5A62; --pt:#8A979E;
+    --grid:#232C32; --key:#FFF1DC; --fill:#33474F;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#14171A; --panel:rgba(26,31,35,.84); --panel-solid:#1A1F23;
+  --line:rgba(150,180,195,.15); --line-strong:rgba(150,180,195,.32);
+  --text:#E2E7EA; --muted:#7C888F;
+  --sel:#FFB020; --sel-hot:#FFC44D;
+  --axX:#E5533D; --axY:#7CC93D; --axZ:#4A9BE8;
+  --shadow:0 1px 2px rgba(0,0,0,.42), 0 12px 30px rgba(0,0,0,.48);
+  --vp-top:#1E262B; --vp-bot:#0B0E11;
+  --surf:#AEB8BE; --surf-back:#6E777D; --wire:#4E5A62; --pt:#8A979E;
+  --grid:#232C32; --key:#FFF1DC; --fill:#33474F;
+}
+
+*{box-sizing:border-box;}
+html,body{height:100%;margin:0;padding:0;}
+body{
+  background:var(--bg); color:var(--text);
+  font-family:"IBM Plex Sans","Helvetica Neue",Arial,sans-serif;
+  overflow:hidden; overscroll-behavior:none;
+  -webkit-user-select:none; user-select:none;
+  -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent;
+  touch-action:none;
+}
+#stage{position:fixed;inset:0;touch-action:none;}
+#gl{display:block;width:100%;height:100%;touch-action:none;}
+
+.hud{position:fixed;z-index:2;pointer-events:none;
+  padding:max(12px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right))
+          0 max(12px,env(safe-area-inset-left));}
+.hud.tl{top:0;left:0;display:flex;flex-direction:column;gap:8px;align-items:flex-start;}
+.hud.tr{top:0;right:0;text-align:right;}
+
+.stats{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+  font-size:10px;font-variant-numeric:tabular-nums;line-height:1.5;color:var(--muted);}
+.stats b{color:var(--text);font-weight:500;}
+
+.group{pointer-events:auto;display:flex;gap:2px;padding:3px;border-radius:10px;
+  background:var(--panel);border:1px solid var(--line);box-shadow:var(--shadow);
+  -webkit-backdrop-filter:blur(14px) saturate(1.3);backdrop-filter:blur(14px) saturate(1.3);}
+
+button{font-family:inherit;font-size:11px;font-weight:600;letter-spacing:.06em;
+  color:var(--muted);background:transparent;border:1px solid transparent;border-radius:8px;
+  padding:8px 11px;min-height:34px;min-width:34px;cursor:pointer;white-space:nowrap;
+  transition:background .13s ease,color .13s ease,border-color .13s ease;}
+button:hover{color:var(--text);background:var(--line);}
+button[aria-pressed="true"]{color:var(--text);background:var(--line);border-color:var(--line-strong);}
+button:disabled{opacity:.34;cursor:default;}
+button:disabled:hover{background:transparent;color:var(--muted);}
+button:focus-visible{outline:2px solid var(--sel);outline-offset:2px;}
+button.go{color:var(--text);}
+button.go:not(:disabled):hover{background:var(--sel);color:#1A1206;}
+
+.dock{position:fixed;left:0;right:0;bottom:0;z-index:3;pointer-events:none;
+  display:flex;flex-direction:column;align-items:center;gap:8px;
+  padding:0 max(12px,env(safe-area-inset-left)) max(12px,env(safe-area-inset-bottom))
+            max(12px,env(safe-area-inset-right));}
+.card{pointer-events:auto;width:min(470px,calc(100vw - 24px));
+  background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);
+  -webkit-backdrop-filter:blur(14px) saturate(1.3);backdrop-filter:blur(14px) saturate(1.3);
+  display:flex;flex-direction:column;}
+.row{display:flex;gap:2px;padding:3px;align-items:center;}
+.row + .row{border-top:1px solid var(--line);}
+.row button{flex:1 1 0;}
+.sep{width:1px;align-self:stretch;margin:5px 3px;background:var(--line);flex:0 0 auto;}
+
+.amt{display:flex;align-items:center;gap:9px;padding:5px 11px 8px;}
+.amt label{font-size:10px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);}
+.amt output{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;font-size:11px;
+  font-variant-numeric:tabular-nums;color:var(--text);min-width:3.6em;text-align:right;}
+.amt input{flex:1 1 auto;}
+input[type=range]{-webkit-appearance:none;appearance:none;height:20px;margin:0;background:transparent;cursor:pointer;}
+input[type=range]::-webkit-slider-runnable-track{height:2px;border-radius:1px;background:var(--line-strong);}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:17px;height:17px;
+  margin-top:-7.5px;border-radius:50%;background:var(--sel);border:2px solid var(--panel-solid);
+  box-shadow:0 1px 3px rgba(0,0,0,.4);}
+input[type=range]::-moz-range-track{height:2px;border-radius:1px;background:var(--line-strong);border:none;}
+input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%;background:var(--sel);
+  border:2px solid var(--panel-solid);}
+input[type=range]:focus-visible{outline:2px solid var(--sel);outline-offset:4px;border-radius:4px;}
+
+.hint{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;font-size:10px;
+  letter-spacing:.03em;color:var(--muted);text-align:center;max-width:44ch;
+  transition:opacity .5s ease;}
+.hint.gone{opacity:0;}
+.mode-x{color:var(--axX);} .mode-y{color:var(--axY);} .mode-z{color:var(--axZ);}
+
+#fallback{position:fixed;inset:0;z-index:9;display:none;place-content:center;padding:32px;
+  text-align:center;background:var(--bg);}
+#fallback.show{display:grid;}
+#fallback strong{display:block;margin-bottom:10px;font-size:13px;font-weight:600;
+  letter-spacing:.14em;text-transform:uppercase;}
+#fallback p{max-width:34ch;margin:0 auto;line-height:1.6;color:var(--muted);font-size:15px;}
+@media (prefers-reduced-motion: reduce){*{transition-duration:.01ms !important;}}
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="gl" aria-label="3D polygon modelling viewport"></canvas></div>
+
+<div class="hud tl">
+  <div class="group" role="group" aria-label="Sub-object level">
+    <button id="mVert" type="button" aria-pressed="false">Vertex</button>
+    <button id="mEdge" type="button" aria-pressed="false">Edge</button>
+    <button id="mFace" type="button" aria-pressed="true">Face</button>
+  </div>
+</div>
+
+<div class="hud tr">
+  <div class="stats">
+    <span id="sCount">6 faces</span><br>
+    <span id="sSel">0 selected</span><br>
+    <span id="sTopo">V8 E12 F6</span>
+  </div>
+</div>
+
+<div class="dock">
+  <p class="hint" id="hint">Tap to select &middot; drag empty space to orbit &middot; two fingers to pan</p>
+  <div class="card">
+    <div class="amt">
+      <label for="kAmt">Amount</label>
+      <input id="kAmt" type="range" min="0.05" max="1.2" step="0.05" value="0.4">
+      <output id="vAmt">0.40</output>
+    </div>
+    <div class="row" role="group" aria-label="Transform tool">
+      <button id="tSel" type="button" aria-pressed="true">Select</button>
+      <button id="tMov" type="button" aria-pressed="false">Move</button>
+      <button id="tRot" type="button" aria-pressed="false">Rotate</button>
+      <button id="tScl" type="button" aria-pressed="false">Scale</button>
+    </div>
+    <div class="row" role="group" aria-label="Modelling operations">
+      <button id="opExtrude" class="go" type="button">Extrude</button>
+      <button id="opChamfer" class="go" type="button">Chamfer</button>
+      <div class="sep"></div>
+      <button id="opAll" type="button" title="Select all">All</button>
+      <button id="opNone" type="button" title="Clear selection">None</button>
+      <div class="sep"></div>
+      <button id="opUndo" type="button" title="Undo">Undo</button>
+      <button id="opRedo" type="button" title="Redo">Redo</button>
+      <button id="opReset" type="button" title="Fresh box and default view">Reset</button>
+    </div>
+  </div>
+</div>
+
+<div id="fallback"><div>
+  <strong>WebGL unavailable</strong>
+  <p id="fallbackMsg">This browser could not start a WebGL context. Try Safari or Chrome with hardware acceleration enabled.</p>
+</div></div>
+
+<script>
+"use strict";
+(function () {
+
+/* ==========================================================================
+   Editable-poly core.
+
+   Canonical form is deliberately dumb: a position list and a list of faces
+   holding vertex indices. Connectivity (half-edges, vertex fans) is derived
+   on demand and thrown away. Operations therefore never patch adjacency in
+   place - they emit a fresh canonical mesh, which keeps them independently
+   testable and makes undo a snapshot.
+   ========================================================================== */
+
+/* <mesh-core> exported for tests/mesh.test.js; do not rename these markers */
+function makeMesh(P, F) { return { P: P, F: F }; }
+
+function boxMesh(sx, sy, sz) {
+  var x = sx / 2, y = sy / 2, z = sz / 2;
+  return makeMesh(
+    [[-x,-y,-z],[ x,-y,-z],[ x, y,-z],[-x, y,-z],
+     [-x,-y, z],[ x,-y, z],[ x, y, z],[-x, y, z]],
+    // every face wound CCW seen from outside
+    [[0,3,2,1], [4,5,6,7], [0,1,5,4], [3,7,6,2], [0,4,7,3], [1,2,6,5]]
+  );
+}
+
+function cloneMesh(m) {
+  return makeMesh(m.P.map(function (p) { return [p[0], p[1], p[2]]; }),
+                  m.F.map(function (f) { return f.slice(); }));
+}
+
+/* ---------------------------------------------------------- vector helpers */
+function sub(a, b) { return [a[0]-b[0], a[1]-b[1], a[2]-b[2]]; }
+function add(a, b) { return [a[0]+b[0], a[1]+b[1], a[2]+b[2]]; }
+function scale(a, s) { return [a[0]*s, a[1]*s, a[2]*s]; }
+function cross(a, b) {
+  return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+}
+function dot(a, b) { return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]; }
+function len(a) { return Math.hypot(a[0], a[1], a[2]); }
+function norm(a) { var l = len(a) || 1; return [a[0]/l, a[1]/l, a[2]/l]; }
+
+// Newell's method: correct for non-planar polygons, unlike a corner cross
+function faceNormal(m, f) {
+  var n = [0, 0, 0];
+  for (var i = 0; i < f.length; i++) {
+    var a = m.P[f[i]], b = m.P[f[(i + 1) % f.length]];
+    n[0] += (a[1] - b[1]) * (a[2] + b[2]);
+    n[1] += (a[2] - b[2]) * (a[0] + b[0]);
+    n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+  }
+  return n;                                   // unnormalised: length is 2*area
+}
+function faceCentroid(m, f) {
+  var c = [0, 0, 0];
+  for (var i = 0; i < f.length; i++) { c = add(c, m.P[f[i]]); }
+  return scale(c, 1 / f.length);
+}
+
+/* ------------------------------------------------------------- connectivity */
+function ekey(a, b) { return a < b ? a + "_" + b : b + "_" + a; }
+
+function topology(m) {
+  var he = [], map = new Map(), i, fi;
+  for (fi = 0; fi < m.F.length; fi++) {
+    var f = m.F[fi], n = f.length, base = he.length;
+    for (i = 0; i < n; i++) {
+      he.push({ a: f[i], b: f[(i + 1) % n], f: fi, c: i,
+                next: base + ((i + 1) % n), twin: -1 });
+      map.set(f[i] + "," + f[(i + 1) % n], base + i);
+    }
+  }
+  for (i = 0; i < he.length; i++) {
+    var t = map.get(he[i].b + "," + he[i].a);
+    he[i].twin = (t === undefined) ? -1 : t;
+  }
+  var outgoing = new Map();                   // vertex -> outgoing half-edges
+  for (i = 0; i < he.length; i++) {
+    if (!outgoing.has(he[i].a)) outgoing.set(he[i].a, []);
+    outgoing.get(he[i].a).push(i);
+  }
+  var edges = new Map();                      // "a_b" -> {a,b,faces:[...]}
+  for (i = 0; i < he.length; i++) {
+    var k = ekey(he[i].a, he[i].b);
+    if (!edges.has(k)) edges.set(k, { a: Math.min(he[i].a, he[i].b),
+                                      b: Math.max(he[i].a, he[i].b), he: [] });
+    edges.get(k).he.push(i);
+  }
+  return { he: he, outgoing: outgoing, edges: edges };
+}
+
+// Ordered fan around v. Returns { E, Fc } where face Fc[i] lies between
+// edges E[i-1] and E[i], cyclically. Closed manifold vertices only.
+function vertexFan(m, T, v) {
+  var start = T.outgoing.get(v);
+  if (!start || !start.length) return null;
+  var h0 = start[0], E = [], Fc = [], h = h0, guard = 0;
+  do {
+    E.push(h);
+    Fc.push(T.he[h].f);
+    var tw = T.he[h].twin;
+    if (tw < 0) return null;                  // open boundary: not supported
+    h = T.he[tw].next;
+    if (++guard > 64) return null;
+  } while (h !== h0);
+  if (E.length !== start.length) return null; // non-manifold fan
+  return { E: E, Fc: Fc };
+}
+
+function vertexFaces(m) {
+  var vf = new Map(), fi, i;
+  for (fi = 0; fi < m.F.length; fi++)
+    for (i = 0; i < m.F[fi].length; i++) {
+      var v = m.F[fi][i];
+      if (!vf.has(v)) vf.set(v, []);
+      if (vf.get(v).indexOf(fi) < 0) vf.get(v).push(fi);
+    }
+  return vf;
+}
+
+// drop unreferenced vertices and degenerate faces
+// mapOut, when supplied, receives oldFaceIndex -> newFaceIndex so callers
+// can keep hold of faces they created
+function compact(m, mapOut) {
+  var used = new Map(), P = [], F = [], i, j;
+  for (i = 0; i < m.F.length; i++) {
+    var f = m.F[i], out = [];
+    for (j = 0; j < f.length; j++) {
+      if (out.length && out[out.length - 1] === f[j]) continue;   // repeat
+      out.push(f[j]);
+    }
+    while (out.length > 1 && out[0] === out[out.length - 1]) out.pop();
+    if (out.length < 3) continue;
+    for (j = 0; j < out.length; j++) {
+      if (!used.has(out[j])) { used.set(out[j], P.length); P.push(m.P[out[j]]); }
+      out[j] = used.get(out[j]);
+    }
+    if (mapOut) mapOut[i] = F.length;
+    F.push(out);
+  }
+  return makeMesh(P, F);
+}
+
+/* ================================================================= EXTRUDE */
+/* Vertices whose incident faces are ALL selected sit strictly inside the
+   region and simply move. Everything on the rim is duplicated, so the
+   original rim stays put to receive the side walls. */
+function extrudeFaces(m, sel, dist) {
+  if (!sel.length) return null;
+  var T = topology(m), vf = vertexFaces(m);
+  var isSel = new Set(sel);
+
+  var N = [0, 0, 0], i, j;
+  for (i = 0; i < sel.length; i++) N = add(N, faceNormal(m, m.F[sel[i]]));
+  N = norm(N);
+  if (!len(N)) return null;
+
+  // collect rim half-edges from the ORIGINAL winding, before any rewrite
+  var rim = [];
+  for (i = 0; i < T.he.length; i++) {
+    var h = T.he[i];
+    if (!isSel.has(h.f)) continue;
+    if (h.twin < 0 || !isSel.has(T.he[h.twin].f)) rim.push([h.a, h.b]);
+  }
+
+  var P = m.P.map(function (p) { return p.slice(); });
+  var F = m.F.map(function (f) { return f.slice(); });
+  var dup = new Map();
+
+  var region = new Set();
+  for (i = 0; i < sel.length; i++)
+    for (j = 0; j < m.F[sel[i]].length; j++) region.add(m.F[sel[i]][j]);
+
+  region.forEach(function (v) {
+    var faces = vf.get(v) || [];
+    var interior = faces.every(function (fi) { return isSel.has(fi); });
+    if (interior) {
+      P[v] = add(P[v], scale(N, dist));       // strictly inside: just move it
+    } else {
+      dup.set(v, P.length);
+      P.push(add(m.P[v], scale(N, dist)));
+    }
+  });
+
+  for (i = 0; i < sel.length; i++) {
+    var f = F[sel[i]];
+    for (j = 0; j < f.length; j++) if (dup.has(f[j])) f[j] = dup.get(f[j]);
+  }
+
+  var newFaces = [];
+  for (i = 0; i < rim.length; i++) {
+    var a = rim[i][0], b = rim[i][1];
+    var ta = dup.has(a) ? dup.get(a) : a, tb = dup.has(b) ? dup.get(b) : b;
+    F.push([a, b, tb, ta]);                   // outward: cross(b-a, N)
+    newFaces.push(F.length - 1);
+  }
+
+  var out = makeMesh(P, F);
+  // the extruded caps keep their indices; report them so they stay selected
+  return { mesh: out, selection: sel.slice(), created: newFaces };
+}
+
+/* ================================================================= CHAMFER */
+/* Cut the fan of faces around each affected vertex at every selected edge.
+
+   With TWO OR MORE cuts, each arc between consecutive cuts collapses to one
+   new vertex, placed by walking `amt` back along the two selected edges that
+   bound the arc. Three or more cuts also leaves a hole, which gets a cap.
+
+   With exactly ONE cut the fan opens into a path rather than splitting into
+   arcs, and both ends of that path sit on the same edge. That needs two new
+   vertices - one per adjacent face, offset perpendicular to the edge inside
+   its own face - and every face between them has to carry BOTH, which is why
+   a corner maps to a list rather than a single index.                     */
+function chamferEdges(m, selEdges, amt) {
+  if (!selEdges.length || amt <= 0) return null;
+  var T = topology(m), i, j;
+
+  var selSet = new Set();
+  for (i = 0; i < selEdges.length; i++) selSet.add(ekey(selEdges[i][0], selEdges[i][1]));
+
+  function edgeSelectedAt(v) {
+    var og = T.outgoing.get(v) || [];
+    for (var q = 0; q < og.length; q++)
+      if (selSet.has(ekey(T.he[og[q]].a, T.he[og[q]].b))) return true;
+    return false;
+  }
+  // never let a chamfer eat past the midpoint of any edge it touches
+  var maxAmt = Infinity;
+  T.edges.forEach(function (e, k) {
+    if (selSet.has(k) || edgeSelectedAt(e.a) || edgeSelectedAt(e.b))
+      maxAmt = Math.min(maxAmt, len(sub(m.P[e.a], m.P[e.b])) * 0.5);
+  });
+  amt = Math.min(amt, maxAmt * 0.98);
+  if (!(amt > 1e-9)) return null;
+
+  // Where a chamfered edge ends up inside one of its faces: the edge line,
+  // shifted `amt` perpendicular to itself, in the plane of that face.
+  function offsetLine(h, fi) {
+    var d = norm(sub(m.P[T.he[h].b], m.P[T.he[h].a]));
+    var inward = norm(cross(norm(faceNormal(m, m.F[fi])), d));
+    return { p: add(m.P[T.he[h].a], scale(inward, amt)), d: d };
+  }
+  // Two such lines meet at the new corner. They can be skew when the arc is
+  // not planar, so take the midpoint of the closest approach.
+  function meet(L1, L2) {
+    var c = cross(L1.d, L2.d), cc = dot(c, c);
+    if (cc < 1e-12) return scale(add(L1.p, L2.p), 0.5);
+    var r = sub(L2.p, L1.p);
+    var t = dot(cross(r, L2.d), c) / cc, u = dot(cross(r, L1.d), c) / cc;
+    return scale(add(add(L1.p, scale(L1.d, t)), add(L2.p, scale(L2.d, u))), 0.5);
+  }
+
+  var P = m.P.map(function (p) { return p.slice(); });
+  var corner = new Map();                 // v -> Map(face -> [new indices])
+  var caps = [];
+
+  var affected = new Set();
+  selSet.forEach(function (k) {
+    var e = T.edges.get(k);
+    if (e) { affected.add(e.a); affected.add(e.b); }
+  });
+
+  affected.forEach(function (v) {
+    var fan = vertexFan(m, T, v);
+    if (!fan) return;
+    var n = fan.E.length;
+    if (n < 3) return;
+    var cuts = [];
+    for (i = 0; i < n; i++)
+      if (selSet.has(ekey(T.he[fan.E[i]].a, T.he[fan.E[i]].b))) cuts.push(i);
+    if (!cuts.length) return;
+
+    var byFace = new Map();
+    corner.set(v, byFace);
+
+    if (cuts.length === 1) {
+      // one cut: the fan becomes a path, both ends on the same edge
+      var i0 = cuts[0], hSel = fan.E[i0], w = T.he[hSel].b;
+      var fEnd = fan.Fc[i0], fStart = fan.Fc[(i0 + 1) % n];
+      var other = function (idx) {       // the face's other edge at v, unmoved
+        return { p: m.P[v], d: norm(sub(m.P[T.he[fan.E[idx]].b], m.P[v])) };
+      };
+      var pStart = meet(offsetLine(T.he[hSel].twin, fStart), other((i0 + 1) % n));
+      var pEnd   = meet(offsetLine(hSel, fEnd), other((i0 - 1 + n) % n));
+      var vStart = P.length; P.push(pStart);
+      var vEnd = P.length;   P.push(pEnd);
+      for (var s = 1; s <= n; s++) {
+        var k = (i0 + s) % n;
+        if (s === 1)      byFace.set(fan.Fc[k], [vStart]);
+        else if (s === n) byFace.set(fan.Fc[k], [vEnd]);
+        // interior faces span the gap, ordered E[k-1] side then E[k] side
+        else              byFace.set(fan.Fc[k], [vStart, vEnd]);
+      }
+      return;
+    }
+
+    var ring = [];
+    for (var c = 0; c < cuts.length; c++) {
+      var sIdx = cuts[c], tIdx = cuts[(c + 1) % cuts.length];
+      var fa = fan.Fc[(sIdx + 1) % n], fb = fan.Fc[tIdx];
+      var nv = P.length;
+      P.push(meet(offsetLine(T.he[fan.E[sIdx]].twin, fa),
+                  offsetLine(fan.E[tIdx], fb)));
+      ring.push(nv);
+      var kk = sIdx;
+      do { kk = (kk + 1) % n; byFace.set(fan.Fc[kk], [nv]); } while (kk !== tIdx);
+    }
+    if (cuts.length >= 3) caps.push({ v: v, ring: ring });
+  });
+
+  function dedupe(arr) {
+    var o = [];
+    for (var q = 0; q < arr.length; q++) if (o.indexOf(arr[q]) < 0) o.push(arr[q]);
+    return o;
+  }
+  // winding is easier to correct after the fact than to reason about up front
+  function orient(pts, poly, want) {
+    return dot(faceNormal({ P: pts }, poly), want) < 0 ? poly.slice().reverse() : poly;
+  }
+
+  var F = [];
+  for (i = 0; i < m.F.length; i++) {
+    var f = m.F[i], out = [];
+    for (j = 0; j < f.length; j++) {
+      var bf = corner.get(f[j]);
+      if (bf && bf.has(i)) { var lst = bf.get(i); for (var q = 0; q < lst.length; q++) out.push(lst[q]); }
+      else out.push(f[j]);
+    }
+    F.push(out);
+  }
+
+  var created = [];
+  selSet.forEach(function (k) {
+    var e = T.edges.get(k);
+    if (!e || e.he.length < 2) return;
+    var f1 = T.he[e.he[0]].f, f2 = T.he[e.he[1]].f;
+    var ca = corner.get(e.a), cb = corner.get(e.b);
+    // faces adjacent to a chamfered edge always map to exactly one vertex
+    var a1 = ca && ca.has(f1) ? ca.get(f1)[0] : e.a;
+    var a2 = ca && ca.has(f2) ? ca.get(f2)[0] : e.a;
+    var b1 = cb && cb.has(f1) ? cb.get(f1)[0] : e.b;
+    var b2 = cb && cb.has(f2) ? cb.get(f2)[0] : e.b;
+    var quad = dedupe([a1, b1, b2, a2]);
+    if (quad.length < 3) return;
+    var want = norm(add(norm(faceNormal(m, m.F[f1])), norm(faceNormal(m, m.F[f2]))));
+    F.push(orient(P, quad, want));
+    created.push(F.length - 1);
+  });
+
+  for (i = 0; i < caps.length; i++) {
+    var cring = dedupe(caps[i].ring);
+    if (cring.length < 3) continue;
+    var vn = [0, 0, 0], og = T.outgoing.get(caps[i].v) || [];
+    for (j = 0; j < og.length; j++) vn = add(vn, norm(faceNormal(m, m.F[T.he[og[j]].f])));
+    F.push(orient(P, cring, norm(vn)));
+    created.push(F.length - 1);
+  }
+
+  var fmap = [], packed = compact(makeMesh(P, F), fmap);
+  created = created.map(function (i) { return fmap[i]; })
+                   .filter(function (i) { return i !== undefined; });
+  return { mesh: packed, created: created };
+}
+
+
+/* </mesh-core> */
+
+/* =========================================================================
+   Viewport: math, GL, shaders
+   ========================================================================= */
+function m4() { return new Float32Array(16); }
+function perspective(o, fovy, aspect, near, far) {
+  var f = 1 / Math.tan(fovy * 0.5), nf = 1 / (near - far);
+  o.fill(0); o[0] = f / aspect; o[5] = f; o[10] = (far + near) * nf; o[11] = -1;
+  o[14] = 2 * far * near * nf; return o;
+}
+function lookAt(o, e, c) {
+  var zx = e[0]-c[0], zy = e[1]-c[1], zz = e[2]-c[2];
+  var l = 1 / Math.hypot(zx, zy, zz); zx*=l; zy*=l; zz*=l;
+  var xx = zz, xy = 0, xz = -zx;
+  l = Math.hypot(xx, xy, xz);
+  if (l < 1e-6) { xx = 1; xz = 0; } else { l = 1/l; xx*=l; xz*=l; }
+  var yx = zy*xz - zz*xy, yy = zz*xx - zx*xz, yz = zx*xy - zy*xx;
+  o[0]=xx; o[1]=yx; o[2]=zx; o[3]=0;
+  o[4]=xy; o[5]=yy; o[6]=zy; o[7]=0;
+  o[8]=xz; o[9]=yz; o[10]=zz; o[11]=0;
+  o[12]=-(xx*e[0]+xy*e[1]+xz*e[2]);
+  o[13]=-(yx*e[0]+yy*e[1]+yz*e[2]);
+  o[14]=-(zx*e[0]+zy*e[1]+zz*e[2]);
+  o[15]=1; return o;
+}
+function mul(o, a, b) {
+  for (var c = 0; c < 4; c++) {
+    var b0=b[c*4], b1=b[c*4+1], b2=b[c*4+2], b3=b[c*4+3];
+    o[c*4]   = a[0]*b0 + a[4]*b1 + a[8]*b2  + a[12]*b3;
+    o[c*4+1] = a[1]*b0 + a[5]*b1 + a[9]*b2  + a[13]*b3;
+    o[c*4+2] = a[2]*b0 + a[6]*b1 + a[10]*b2 + a[14]*b3;
+    o[c*4+3] = a[3]*b0 + a[7]*b1 + a[11]*b2 + a[15]*b3;
+  }
+  return o;
+}
+function rotateAround(p, pivot, axis, ang) {
+  var v = sub(p, pivot), c = Math.cos(ang), s = Math.sin(ang);
+  var k = cross(axis, v), d = dot(axis, v) * (1 - c);
+  return add(pivot, [v[0]*c + k[0]*s + axis[0]*d,
+                     v[1]*c + k[1]*s + axis[1]*d,
+                     v[2]*c + k[2]*s + axis[2]*d]);
+}
+
+var canvas = document.getElementById("gl");
+var gl = null;
+try {
+  var glo = { antialias: true, alpha: false, depth: true, premultipliedAlpha: false };
+  gl = canvas.getContext("webgl", glo) || canvas.getContext("experimental-webgl", glo);
+} catch (e) { gl = null; }
+if (!gl) { document.getElementById("fallback").classList.add("show"); return; }
+
+function shader(t, src, tag) {
+  var s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(tag + ": " + gl.getShaderInfoLog(s));
+  return s;
+}
+function program(vs, fs, tag) {
+  var p = gl.createProgram();
+  gl.attachShader(p, shader(gl.VERTEX_SHADER, vs, tag + " vs"));
+  gl.attachShader(p, shader(gl.FRAGMENT_SHADER, fs, tag + " fs"));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(tag + " link: " + gl.getProgramInfoLog(p));
+  p.u = {}; p.a = {};
+  var n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS), i, d;
+  for (i = 0; i < n; i++) { d = gl.getActiveUniform(p, i); p.u[d.name] = gl.getUniformLocation(p, d.name); }
+  n = gl.getProgramParameter(p, gl.ACTIVE_ATTRIBUTES);
+  for (i = 0; i < n; i++) { d = gl.getActiveAttrib(p, i); p.a[d.name] = gl.getAttribLocation(p, d.name); }
+  p.U = function (k) { return p.u[k] === undefined ? null : p.u[k]; };
+  return p;
+}
+
+var VS_FACE = [
+"precision highp float;",
+"attribute vec3 aPos; attribute vec3 aNor; attribute float aSel;",
+"uniform mat4 uVP;",
+"varying vec3 vN; varying vec3 vP; varying float vS;",
+"void main(){ vN=aNor; vP=aPos; vS=aSel; gl_Position=uVP*vec4(aPos,1.0); }"
+].join("\n");
+
+var FS_FACE = [
+"precision highp float;",
+"varying vec3 vN; varying vec3 vP; varying float vS;",
+"uniform vec3 uCam, uKey, uFill, uLdir, uSurf, uBack, uSel;",
+"void main(){",
+"  vec3 V = normalize(uCam - vP);",
+"  vec3 N = normalize(vN);",
+// backfaces are shown deliberately: an open or inverted face should be
+// obvious, not invisible
+"  bool front = dot(N, V) >= 0.0;",
+"  if (!front) N = -N;",
+"  vec3 L = normalize(uLdir), H = normalize(L + V);",
+"  float ndl = max(dot(N, L), 0.0);",
+"  vec3 base = front ? uSurf : uBack;",
+"  float back = max(dot(N, -L), 0.0);",
+"  vec3 c = base * (uFill * (0.58 + 0.42 * (0.5 + 0.5 * N.y))",
+"                 + uKey * ndl * 1.02 + uKey * back * 0.14);",
+"  c += uKey * pow(max(dot(N, H), 0.0), 38.0) * 0.30;",
+// Selection is a readable state, not a pigment: blend it in AFTER lighting so
+// a face pointing away from the key light still reads as selected.
+"  c = mix(c, uSel * (0.58 + 0.55 * ndl), clamp(vS, 0.0, 1.0) * 0.82);",
+"  vec3 k = vec3(0.82); vec3 d = max(c - k, vec3(0.0));",
+"  gl_FragColor = vec4(min(c, k) + d / (1.0 + d / (1.0 - k)), 1.0);",
+"}"
+].join("\n");
+
+var VS_LINE = [
+"precision highp float;",
+"attribute vec3 aPos;",
+"uniform mat4 uVP;",
+"void main(){ gl_Position = uVP * vec4(aPos, 1.0); }"
+].join("\n");
+
+var FS_FLAT = [
+"precision highp float;",
+"uniform vec3 uColor; uniform float uAlpha;",
+"void main(){ gl_FragColor = vec4(uColor, uAlpha); }"
+].join("\n");
+
+/* screen-space thick lines: each segment is a quad expanded perpendicular to
+   itself after projection, because gl.lineWidth is clamped to 1 nearly
+   everywhere and a 1px selection is invisible on a retina phone */
+var VS_THICK = [
+"precision highp float;",
+"attribute vec3 aPos; attribute vec3 aOther; attribute float aSide;",
+"uniform mat4 uVP; uniform vec2 uPx; uniform float uW;",
+"void main(){",
+"  vec4 c0 = uVP * vec4(aPos, 1.0);",
+"  vec4 c1 = uVP * vec4(aOther, 1.0);",
+"  vec2 s0 = c0.xy / max(c0.w, 1e-5) * uPx;",
+"  vec2 s1 = c1.xy / max(c1.w, 1e-5) * uPx;",
+"  vec2 dir = s1 - s0;",
+"  float l = length(dir);",
+"  dir = (l > 1e-5) ? dir / l : vec2(1.0, 0.0);",
+"  vec2 nrm = vec2(-dir.y, dir.x) * (uW * 0.5) * aSide;",
+"  c0.xy += nrm / uPx * c0.w;",
+"  gl_Position = c0;",
+"}"
+].join("\n");
+
+var VS_POINT = [
+"precision highp float;",
+"attribute vec3 aPos; attribute float aSel;",
+"uniform mat4 uVP; uniform float uSize;",
+"varying float vS;",
+"void main(){ vS = aSel; gl_Position = uVP * vec4(aPos, 1.0);",
+"  gl_PointSize = uSize * (aSel > 0.5 ? 1.35 : 1.0); }"
+].join("\n");
+
+var FS_POINT = [
+"precision highp float;",
+"varying float vS;",
+"uniform vec3 uColor, uSel;",
+"void main(){",
+"  vec2 d = gl_PointCoord - vec2(0.5);",
+"  float r = length(d);",
+"  if (r > 0.5) discard;",
+"  vec3 c = mix(uColor, uSel, step(0.5, vS));",
+"  float edge = smoothstep(0.5, 0.36, r);",
+"  gl_FragColor = vec4(mix(c * 0.35, c, edge), 1.0);",
+"}"
+].join("\n");
+
+var FS_SKY = [
+"precision highp float;",
+"uniform vec2 uRes; uniform vec3 uTop, uBot;",
+"void main(){",
+"  float y = gl_FragCoord.y / uRes.y;",
+"  vec3 c = mix(uBot, uTop, pow(clamp(y, 0.0, 1.0), 0.9));",
+"  c *= 1.0 - smoothstep(0.34, 1.0, distance(gl_FragCoord.xy/uRes, vec2(0.5,0.55))) * 0.34;",
+"  gl_FragColor = vec4(c, 1.0);",
+"}"
+].join("\n");
+
+var VS_FULL = ["precision highp float;", "attribute vec2 aPos;",
+  "void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }"].join("\n");
+
+var pFace, pLine, pThick, pPoint, pSky;
+try {
+  pFace  = program(VS_FACE, FS_FACE, "face");
+  pLine  = program(VS_LINE, FS_FLAT, "line");
+  pThick = program(VS_THICK, FS_FLAT, "thick");
+  pPoint = program(VS_POINT, FS_POINT, "point");
+  pSky   = program(VS_FULL, FS_SKY, "sky");
+} catch (err) {
+  document.getElementById("fallbackMsg").textContent = "Shader error: " + err.message;
+  document.getElementById("fallback").classList.add("show");
+  return;
+}
+
+var quadBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+function buf() { return gl.createBuffer(); }
+var B = { fp: buf(), fn: buf(), fs: buf(), wp: buf(),
+          tp: buf(), to: buf(), ts: buf(), pp: buf(), ps: buf(),
+          gp: buf(), go: buf(), gs: buf(), hp: buf(), hs: buf() };
+var N = { face: 0, wire: 0, thick: 0, point: 0, gizmo: 0, handle: 0 };
+
+/* -------------------------------------------------------------- palette */
+var PAL = {};
+function rgb(cs, k, fb) {
+  var v = cs.getPropertyValue(k).trim() || fb;
+  if (v.charAt(0) === "#") {
+    if (v.length === 4) v = "#"+v[1]+v[1]+v[2]+v[2]+v[3]+v[3];
+    return [parseInt(v.substr(1,2),16)/255, parseInt(v.substr(3,2),16)/255, parseInt(v.substr(5,2),16)/255];
+  }
+  var m2 = v.match(/[\d.]+/g);
+  return (m2 && m2.length >= 3) ? [+m2[0]/255, +m2[1]/255, +m2[2]/255] : [.5,.5,.5];
+}
+function readPalette() {
+  var c = getComputedStyle(document.documentElement);
+  PAL.top=rgb(c,"--vp-top","#1E262B");   PAL.bot=rgb(c,"--vp-bot","#0B0E11");
+  PAL.surf=rgb(c,"--surf","#AEB8BE");    PAL.back=rgb(c,"--surf-back","#6E777D");
+  PAL.wire=rgb(c,"--wire","#4E5A62");    PAL.pt=rgb(c,"--pt","#8A979E");
+  PAL.sel=rgb(c,"--sel","#FFB020");      PAL.selHot=rgb(c,"--sel-hot","#FFC44D");
+  PAL.key=rgb(c,"--key","#FFF1DC");      PAL.fill=rgb(c,"--fill","#33474F");
+  PAL.axis=[rgb(c,"--axX","#E5533D"), rgb(c,"--axY","#7CC93D"), rgb(c,"--axZ","#4A9BE8")];
+}
+readPalette();
+var mqd = window.matchMedia("(prefers-color-scheme: dark)");
+if (mqd.addEventListener) mqd.addEventListener("change", readPalette);
+else if (mqd.addListener) mqd.addListener(readPalette);
+new MutationObserver(readPalette).observe(document.documentElement,
+  { attributes: true, attributeFilter: ["data-theme", "class", "style"] });
+
+/* =========================================================================
+   Application state
+   ========================================================================= */
+var MODE = { VERT: 0, EDGE: 1, FACE: 2 };
+var TOOL = { SELECT: 0, MOVE: 1, ROTATE: 2, SCALE: 3 };
+var app = {
+  mesh: boxMesh(2, 2, 2),
+  topo: null,
+  mode: MODE.FACE,
+  tool: TOOL.SELECT,
+  selV: new Set(), selE: new Set(), selF: new Set(),
+  amount: 0.4,
+  undo: [], redo: []
+};
+
+function snapshot() {
+  return { mesh: cloneMesh(app.mesh), mode: app.mode,
+           selV: new Set(app.selV), selE: new Set(app.selE), selF: new Set(app.selF) };
+}
+function restore(s) {
+  app.mesh = s.mesh; app.mode = s.mode;
+  app.selV = s.selV; app.selE = s.selE; app.selF = s.selF;
+  refresh();
+}
+function pushUndo() {
+  app.undo.push(snapshot());
+  if (app.undo.length > 60) app.undo.shift();
+  app.redo.length = 0;
+}
+
+// vertices affected by the current sub-object selection
+function selectedVertices() {
+  var out = new Set(), m = app.mesh;
+  if (app.mode === MODE.VERT) { app.selV.forEach(function (v) { out.add(v); }); }
+  else if (app.mode === MODE.EDGE) {
+    app.selE.forEach(function (k) {
+      var p = k.split("_"); out.add(+p[0]); out.add(+p[1]);
+    });
+  } else {
+    app.selF.forEach(function (f) {
+      if (m.F[f]) m.F[f].forEach(function (v) { out.add(v); });
+    });
+  }
+  return out;
+}
+function selectionCentroid() {
+  var vs = selectedVertices(), c = [0, 0, 0], n = 0;
+  vs.forEach(function (v) { c = add(c, app.mesh.P[v]); n++; });
+  return n ? scale(c, 1 / n) : null;
+}
+function selectionCount() {
+  return app.mode === MODE.VERT ? app.selV.size
+       : app.mode === MODE.EDGE ? app.selE.size : app.selF.size;
+}
+
+/* ------------------------------------------------------------- buffers */
+function upload(b, arr) {
+  gl.bindBuffer(gl.ARRAY_BUFFER, b);
+  gl.bufferData(gl.ARRAY_BUFFER, arr, gl.DYNAMIC_DRAW);
+}
+function pushThick(P, O, S, a, b) {          // one screen-space-thick segment
+  var seq = [[a,b,1],[a,b,-1],[b,a,-1],[a,b,-1],[b,a,1],[b,a,-1]];
+  for (var i = 0; i < 6; i++) {
+    P.push(seq[i][0][0], seq[i][0][1], seq[i][0][2]);
+    O.push(seq[i][1][0], seq[i][1][1], seq[i][1][2]);
+    S.push(seq[i][2]);
+  }
+}
+
+function rebuild() {
+  var m = app.mesh, T = app.topo = topology(m), i, j;
+
+  var FP = [], FN = [], FS = [];
+  for (i = 0; i < m.F.length; i++) {
+    var f = m.F[i], nrm = norm(faceNormal(m, f));
+    var s = (app.mode === MODE.FACE && app.selF.has(i)) ? 1 : 0;
+    for (j = 1; j + 1 < f.length; j++) {     // flat-shaded fan
+      var tri = [f[0], f[j], f[j + 1]];
+      for (var k = 0; k < 3; k++) {
+        var p = m.P[tri[k]];
+        FP.push(p[0], p[1], p[2]); FN.push(nrm[0], nrm[1], nrm[2]); FS.push(s);
+      }
+    }
+  }
+  N.face = FP.length / 3;
+  upload(B.fp, new Float32Array(FP)); upload(B.fn, new Float32Array(FN));
+  upload(B.fs, new Float32Array(FS));
+
+  var WP = [], TP = [], TO = [], TS = [];
+  T.edges.forEach(function (e, key) {
+    var a = m.P[e.a], b = m.P[e.b];
+    WP.push(a[0], a[1], a[2], b[0], b[1], b[2]);
+    if (app.mode === MODE.EDGE && app.selE.has(key)) pushThick(TP, TO, TS, a, b);
+  });
+  N.wire = WP.length / 3; N.thick = TS.length;
+  upload(B.wp, new Float32Array(WP));
+  upload(B.tp, new Float32Array(TP)); upload(B.to, new Float32Array(TO));
+  upload(B.ts, new Float32Array(TS));
+
+  var PP = [], PS = [];
+  for (i = 0; i < m.P.length; i++) {
+    PP.push(m.P[i][0], m.P[i][1], m.P[i][2]);
+    PS.push(app.mode === MODE.VERT && app.selV.has(i) ? 1 : 0);
+  }
+  N.point = m.P.length;
+  upload(B.pp, new Float32Array(PP)); upload(B.ps, new Float32Array(PS));
+}
+
+/* -------------------------------------------------------------- camera */
+var FOV = 42 * Math.PI / 180;
+var cam = { yaw: -0.72, pitch: 0.46, dist: 6.4, target: [0, 0, 0],
+            pos: [0,0,6], right: [1,0,0], up: [0,1,0], fwd: [0,0,-1] };
+var view = m4(), proj = m4(), vp = m4();
+var W = 1, H = 1, cssW = 1, cssH = 1, dpr = 1;
+
+function updateCamera() {
+  var cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+  cam.pos = add(cam.target, [cam.dist * cp * Math.sin(cam.yaw),
+                             cam.dist * sp,
+                             cam.dist * cp * Math.cos(cam.yaw)]);
+  cam.fwd = norm(sub(cam.target, cam.pos));
+  cam.right = norm([-cam.fwd[2], 0, cam.fwd[0]]);          // cross(fwd, worldUp)
+  cam.up = cross(cam.right, cam.fwd);
+  lookAt(view, cam.pos, cam.target);
+  perspective(proj, FOV, cssW / cssH, 0.05, 200);
+  mul(vp, proj, view);
+}
+
+// Distance that frames the model on whichever axis is tighter -- a portrait
+// phone is far narrower than it is tall, so fitting height alone overflows it.
+var userZoomed = false;
+function fitDistance() {
+  var aspect = cssW / cssH, vHalf = FOV * 0.5;
+  var hHalf = Math.atan(Math.tan(vHalf) * aspect);
+  return 2.45 / Math.sin(Math.max(0.05, Math.min(vHalf, hHalf)));
+}
+
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cssW = canvas.clientWidth || window.innerWidth;
+  cssH = canvas.clientHeight || window.innerHeight;
+  W = Math.max(2, Math.round(cssW * dpr)); H = Math.max(2, Math.round(cssH * dpr));
+  if (canvas.width !== W) canvas.width = W;
+  if (canvas.height !== H) canvas.height = H;
+  if (!userZoomed) cam.dist = fitDistance();
+  updateCamera();
+}
+
+function project(p) {
+  var x = vp[0]*p[0] + vp[4]*p[1] + vp[8]*p[2]  + vp[12];
+  var y = vp[1]*p[0] + vp[5]*p[1] + vp[9]*p[2]  + vp[13];
+  var w = vp[3]*p[0] + vp[7]*p[1] + vp[11]*p[2] + vp[15];
+  if (w <= 1e-6) return null;
+  return { x: (x / w * 0.5 + 0.5) * cssW, y: (1 - (y / w * 0.5 + 0.5)) * cssH, w: w };
+}
+function pointerRay(px, py) {
+  var ndx = (px / cssW) * 2 - 1, ndy = 1 - (py / cssH) * 2;
+  var t = Math.tan(FOV * 0.5), aspect = cssW / cssH;
+  return { o: cam.pos, d: norm(add(add(scale(cam.right, ndx * t * aspect),
+                                       scale(cam.up, ndy * t)), cam.fwd)) };
+}
+function rayTri(r, a, b, c) {
+  var e1 = sub(b, a), e2 = sub(c, a), p = cross(r.d, e2), det = dot(e1, p);
+  if (Math.abs(det) < 1e-10) return -1;
+  var inv = 1 / det, tv = sub(r.o, a);
+  var u = dot(tv, p) * inv; if (u < -1e-6 || u > 1 + 1e-6) return -1;
+  var q = cross(tv, e1);
+  var v = dot(r.d, q) * inv; if (v < -1e-6 || u + v > 1 + 1e-6) return -1;
+  var t = dot(e2, q) * inv;
+  return t > 1e-5 ? t : -1;
+}
+function rayPlane(r, p0, n) {
+  var den = dot(r.d, n);
+  if (Math.abs(den) < 1e-8) return null;
+  var t = dot(sub(p0, r.o), n) / den;
+  return t > 0 ? add(r.o, scale(r.d, t)) : null;
+}
+// parameter along (p0 + t*dir) closest to the ray
+function closestOnLine(r, p0, dir) {
+  var w0 = sub(p0, r.o);
+  var a = dot(dir, dir), b = dot(dir, r.d), c = dot(r.d, r.d);
+  var d = dot(dir, w0), e = dot(r.d, w0), den = a * c - b * b;
+  return (Math.abs(den) < 1e-9) ? 0 : (b * e - c * d) / den;
+}
+
+/* -------------------------------------------------------------- picking */
+var PICK_PX = 20;
+
+function pickAt(px, py) {
+  var m = app.mesh, r = pointerRay(px, py), i;
+  if (app.mode === MODE.FACE) {
+    var best = -1, bestT = Infinity;
+    for (i = 0; i < m.F.length; i++) {
+      var f = m.F[i];
+      for (var j = 1; j + 1 < f.length; j++) {
+        var t = rayTri(r, m.P[f[0]], m.P[f[j]], m.P[f[j + 1]]);
+        if (t > 0 && t < bestT) { bestT = t; best = i; }
+      }
+    }
+    return best < 0 ? null : { kind: "f", id: best };
+  }
+  if (app.mode === MODE.VERT) {
+    var bv = -1, bd = PICK_PX, bw = Infinity;
+    for (i = 0; i < m.P.length; i++) {
+      var s = project(m.P[i]); if (!s) continue;
+      var dd = Math.hypot(s.x - px, s.y - py);
+      // nearest under the finger, ties broken toward the camera
+      if (dd < PICK_PX && (dd < bd - 3 || (Math.abs(dd - bd) <= 3 && s.w < bw))) {
+        bd = Math.min(bd, dd); bw = s.w; bv = i;
+      }
+    }
+    return bv < 0 ? null : { kind: "v", id: bv };
+  }
+  var be = null, bed = PICK_PX, bew = Infinity;
+  app.topo.edges.forEach(function (e, key) {
+    var A = project(m.P[e.a]), Bp = project(m.P[e.b]);
+    if (!A || !Bp) return;
+    var vx = Bp.x - A.x, vy = Bp.y - A.y, L2 = vx * vx + vy * vy;
+    var t = L2 > 1e-6 ? Math.max(0, Math.min(1, ((px - A.x) * vx + (py - A.y) * vy) / L2)) : 0;
+    var dd = Math.hypot(A.x + vx * t - px, A.y + vy * t - py);
+    var w = A.w + (Bp.w - A.w) * t;
+    if (dd < PICK_PX && (dd < bed - 3 || (Math.abs(dd - bed) <= 3 && w < bew))) {
+      bed = Math.min(bed, dd); bew = w; be = key;
+    }
+  });
+  return be === null ? null : { kind: "e", id: be };
+}
+
+function toggleSelection(hit) {
+  if (!hit) return;
+  var set = hit.kind === "v" ? app.selV : hit.kind === "e" ? app.selE : app.selF;
+  if (set.has(hit.id)) set.delete(hit.id); else set.add(hit.id);
+}
+
+/* --------------------------------------------------------------- gizmo */
+var AX = [[1,0,0],[0,1,0],[0,0,1]];
+var giz = { axis: -1, pivot: null, verts: [], orig: [], t0: 0, a0: 0, p0: null, sx: 0, sy: 0 };
+
+function gizmoLen(pivot) {
+  var d = Math.max(0.05, dot(sub(pivot, cam.pos), cam.fwd));
+  return 92 * (2 * d * Math.tan(FOV * 0.5)) / cssH;   // constant on screen
+}
+function axisBasis(a) {
+  var n = AX[a];
+  var u = Math.abs(n[1]) < 0.9 ? norm(cross(n, [0,1,0])) : norm(cross(n, [1,0,0]));
+  return [u, cross(n, u)];
+}
+function angleOn(p, pivot, a) {
+  var b = axisBasis(a), d = sub(p, pivot);
+  return Math.atan2(dot(d, b[1]), dot(d, b[0]));
+}
+function gizmoVisible() { return app.tool !== TOOL.SELECT && selectionCount() > 0; }
+
+function gizmoHandleAt(px, py) {
+  var pivot = selectionCentroid();
+  if (!pivot || !gizmoVisible()) return -1;
+  var L = gizmoLen(pivot), best = -1, bd = 26;
+  for (var a = 0; a < 3; a++) {
+    if (app.tool === TOOL.ROTATE) {
+      // grab anywhere on the ring, not just at its tip
+      var b = axisBasis(a), hit = 999;
+      for (var s = 0; s < 24; s++) {
+        var th = s / 24 * Math.PI * 2;
+        var p = add(pivot, add(scale(b[0], Math.cos(th) * L), scale(b[1], Math.sin(th) * L)));
+        var sp = project(p); if (!sp) continue;
+        hit = Math.min(hit, Math.hypot(sp.x - px, sp.y - py));
+      }
+      if (hit < bd) { bd = hit; best = a; }
+    } else {
+      var sp2 = project(add(pivot, scale(AX[a], L)));
+      if (!sp2) continue;
+      var dd = Math.hypot(sp2.x - px, sp2.y - py);
+      if (dd < bd) { bd = dd; best = a; }
+    }
+  }
+  if (app.tool !== TOOL.ROTATE) {
+    var c = project(pivot);
+    if (c && Math.hypot(c.x - px, c.y - py) < 18) best = 3;   // centre handle
+  }
+  return best;
+}
+
+function beginGizmo(axis, px, py) {
+  pushUndo();
+  giz.axis = axis;
+  giz.pivot = selectionCentroid();
+  giz.verts = []; selectedVertices().forEach(function (v) { giz.verts.push(v); });
+  giz.orig = giz.verts.map(function (v) { return app.mesh.P[v].slice(); });
+  giz.sx = px; giz.sy = py;
+  var r = pointerRay(px, py);
+  if (axis < 3) {
+    giz.t0 = closestOnLine(r, giz.pivot, AX[axis]);
+    var hp = rayPlane(r, giz.pivot, AX[axis]);
+    giz.a0 = hp ? angleOn(hp, giz.pivot, axis) : 0;
+  } else {
+    giz.p0 = rayPlane(r, giz.pivot, scale(cam.fwd, -1));
+  }
+}
+
+function dragGizmo(px, py) {
+  var r = pointerRay(px, py), m = app.mesh, i, a = giz.axis;
+  if (a < 0 || !giz.pivot) return;
+  if (app.tool === TOOL.MOVE) {
+    var delta;
+    if (a < 3) delta = scale(AX[a], closestOnLine(r, giz.pivot, AX[a]) - giz.t0);
+    else {
+      var p = rayPlane(r, giz.pivot, scale(cam.fwd, -1));
+      if (!p || !giz.p0) return;
+      delta = sub(p, giz.p0);
+    }
+    for (i = 0; i < giz.verts.length; i++) m.P[giz.verts[i]] = add(giz.orig[i], delta);
+  } else if (app.tool === TOOL.ROTATE) {
+    if (a >= 3) return;
+    var hp = rayPlane(r, giz.pivot, AX[a]);
+    if (!hp) return;
+    var ang = angleOn(hp, giz.pivot, a) - giz.a0;
+    for (i = 0; i < giz.verts.length; i++)
+      m.P[giz.verts[i]] = rotateAround(giz.orig[i], giz.pivot, AX[a], ang);
+  } else {
+    var f;
+    if (a < 3) {
+      var t = closestOnLine(r, giz.pivot, AX[a]);
+      f = (Math.abs(giz.t0) > 1e-4) ? t / giz.t0 : 1;
+      f = Math.max(0.02, Math.min(20, f));
+      for (i = 0; i < giz.verts.length; i++) {
+        var d = sub(giz.orig[i], giz.pivot), comp = dot(d, AX[a]);
+        m.P[giz.verts[i]] = add(giz.orig[i], scale(AX[a], comp * (f - 1)));
+      }
+    } else {
+      var c = project(giz.pivot); if (!c) return;
+      var d0 = Math.hypot(giz.sx - c.x, giz.sy - c.y) || 1;
+      f = Math.max(0.02, Math.min(20, Math.hypot(px - c.x, py - c.y) / d0));
+      for (i = 0; i < giz.verts.length; i++)
+        m.P[giz.verts[i]] = add(giz.pivot, scale(sub(giz.orig[i], giz.pivot), f));
+    }
+  }
+  rebuild();
+}
+
+/* ---------------------------------------------------------------- draw */
+var gridBuf = gl.createBuffer(), gridN = 0;
+(function buildGrid() {
+  var G = [], n = 6, s = 1;
+  for (var i = -n; i <= n; i++) {
+    G.push(i*s, 0, -n*s, i*s, 0, n*s);
+    G.push(-n*s, 0, i*s, n*s, 0, i*s);
+  }
+  gridN = G.length / 3;
+  gl.bindBuffer(gl.ARRAY_BUFFER, gridBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(G), gl.STATIC_DRAW);
+})();
+
+function attrib(p, name, b, size) {
+  var loc = p.a[name];
+  if (loc === undefined || loc < 0) return;
+  gl.bindBuffer(gl.ARRAY_BUFFER, b);
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0);
+}
+function drawThick(P, O, S, count, color, width) {
+  if (!count) return;
+  gl.useProgram(pThick);
+  gl.uniformMatrix4fv(pThick.U("uVP"), false, vp);
+  gl.uniform2f(pThick.U("uPx"), cssW * 0.5, cssH * 0.5);
+  gl.uniform1f(pThick.U("uW"), width);
+  gl.uniform3fv(pThick.U("uColor"), color);
+  gl.uniform1f(pThick.U("uAlpha"), 1.0);
+  attrib(pThick, "aPos", P, 3); attrib(pThick, "aOther", O, 3); attrib(pThick, "aSide", S, 1);
+  gl.drawArrays(gl.TRIANGLES, 0, count);
+}
+
+var GP = [], GO = [], GS = [], HP = [], HS = [];
+function drawGizmo() {
+  var pivot = selectionCentroid();
+  if (!pivot || !gizmoVisible()) return;
+  var L = gizmoLen(pivot), a, s;
+  gl.disable(gl.DEPTH_TEST);
+  for (a = 0; a < 3; a++) {
+    GP.length = 0; GO.length = 0; GS.length = 0;
+    if (app.tool === TOOL.ROTATE) {
+      var b = axisBasis(a), prev = null;
+      for (s = 0; s <= 48; s++) {
+        var th = s / 48 * Math.PI * 2;
+        var p = add(pivot, add(scale(b[0], Math.cos(th) * L), scale(b[1], Math.sin(th) * L)));
+        if (prev) pushThick(GP, GO, GS, prev, p);
+        prev = p;
+      }
+    } else {
+      pushThick(GP, GO, GS, pivot, add(pivot, scale(AX[a], L)));
+    }
+    upload(B.gp, new Float32Array(GP)); upload(B.go, new Float32Array(GO));
+    upload(B.gs, new Float32Array(GS));
+    drawThick(B.gp, B.go, B.gs, GS.length, PAL.axis[a], giz.axis === a ? 6.5 : 4);
+  }
+  if (app.tool !== TOOL.ROTATE) {
+    HP.length = 0; HS.length = 0;
+    for (a = 0; a < 3; a++) {
+      var h = add(pivot, scale(AX[a], L));
+      HP.push(h[0], h[1], h[2]); HS.push(0);
+    }
+    HP.push(pivot[0], pivot[1], pivot[2]); HS.push(1);
+    upload(B.hp, new Float32Array(HP)); upload(B.hs, new Float32Array(HS));
+    for (a = 0; a < 4; a++) {
+      gl.useProgram(pPoint);
+      gl.uniformMatrix4fv(pPoint.U("uVP"), false, vp);
+      gl.uniform1f(pPoint.U("uSize"), (a === 3 ? 13 : 15) * dpr);
+      gl.uniform3fv(pPoint.U("uColor"), a === 3 ? PAL.selHot : PAL.axis[a]);
+      gl.uniform3fv(pPoint.U("uSel"), a === 3 ? PAL.selHot : PAL.axis[a]);
+      attrib(pPoint, "aPos", B.hp, 3); attrib(pPoint, "aSel", B.hs, 1);
+      gl.drawArrays(gl.POINTS, a, 1);
+    }
+  }
+  gl.enable(gl.DEPTH_TEST);
+}
+
+function draw() {
+  gl.viewport(0, 0, W, H);
+  gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.disable(gl.CULL_FACE);
+  gl.depthMask(false);
+  gl.useProgram(pSky);
+  attrib(pSky, "aPos", quadBuf, 2);
+  gl.uniform2f(pSky.U("uRes"), W, H);
+  gl.uniform3fv(pSky.U("uTop"), PAL.top); gl.uniform3fv(pSky.U("uBot"), PAL.bot);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  gl.depthMask(true); gl.clear(gl.DEPTH_BUFFER_BIT); gl.enable(gl.DEPTH_TEST);
+
+  // The grid plane cuts straight through a box centred on the origin, so it
+  // must not write depth - otherwise it punches holes in the model's lower half.
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.depthMask(false);
+  gl.useProgram(pLine);
+  gl.uniformMatrix4fv(pLine.U("uVP"), false, vp);
+  gl.uniform3fv(pLine.U("uColor"), PAL.wire);
+  gl.uniform1f(pLine.U("uAlpha"), 0.34);
+  attrib(pLine, "aPos", gridBuf, 3);
+  gl.drawArrays(gl.LINES, 0, gridN);
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+
+  // push fills back so the wireframe lands cleanly on the surface
+  gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1.0, 1.0);
+  gl.useProgram(pFace);
+  gl.uniformMatrix4fv(pFace.U("uVP"), false, vp);
+  gl.uniform3f(pFace.U("uCam"), cam.pos[0], cam.pos[1], cam.pos[2]);
+  gl.uniform3fv(pFace.U("uKey"), PAL.key);   gl.uniform3fv(pFace.U("uFill"), PAL.fill);
+  gl.uniform3fv(pFace.U("uSurf"), PAL.surf); gl.uniform3fv(pFace.U("uBack"), PAL.back);
+  gl.uniform3fv(pFace.U("uSel"), PAL.sel);
+  var L = norm(add(add(scale(cam.right, -0.42), scale(cam.up, 0.74)), scale(cam.fwd, -0.52)));
+  gl.uniform3f(pFace.U("uLdir"), L[0], L[1], L[2]);
+  attrib(pFace, "aPos", B.fp, 3); attrib(pFace, "aNor", B.fn, 3); attrib(pFace, "aSel", B.fs, 1);
+  gl.drawArrays(gl.TRIANGLES, 0, N.face);
+  gl.disable(gl.POLYGON_OFFSET_FILL);
+
+  gl.useProgram(pLine);
+  gl.uniformMatrix4fv(pLine.U("uVP"), false, vp);
+  gl.uniform3fv(pLine.U("uColor"), PAL.wire);
+  gl.uniform1f(pLine.U("uAlpha"), 1.0);
+  attrib(pLine, "aPos", B.wp, 3);
+  gl.drawArrays(gl.LINES, 0, N.wire);
+
+  if (app.mode === MODE.EDGE) drawThick(B.tp, B.to, B.ts, N.thick, PAL.sel, 5.5 * 1);
+  if (app.mode === MODE.VERT) {
+    gl.useProgram(pPoint);
+    gl.uniformMatrix4fv(pPoint.U("uVP"), false, vp);
+    gl.uniform1f(pPoint.U("uSize"), 8 * dpr);
+    gl.uniform3fv(pPoint.U("uColor"), PAL.pt);
+    gl.uniform3fv(pPoint.U("uSel"), PAL.sel);
+    attrib(pPoint, "aPos", B.pp, 3); attrib(pPoint, "aSel", B.ps, 1);
+    gl.drawArrays(gl.POINTS, 0, N.point);
+  }
+  drawGizmo();
+}
+
+/* ------------------------------------------------------------ operations */
+function doExtrude() {
+  if (app.mode !== MODE.FACE || !app.selF.size) return;
+  var list = []; app.selF.forEach(function (f) { list.push(f); });
+  pushUndo();
+  var r = extrudeFaces(app.mesh, list, app.amount);
+  if (!r) { app.undo.pop(); return; }
+  app.mesh = r.mesh;
+  app.selV.clear(); app.selE.clear();
+  app.selF = new Set(r.selection);           // keep the cap live for another pass
+  refresh();
+}
+
+function doChamfer() {
+  var edges = [], T = app.topo;
+  if (app.mode === MODE.EDGE) {
+    app.selE.forEach(function (k) { var p = k.split("_"); edges.push([+p[0], +p[1]]); });
+  } else if (app.mode === MODE.VERT) {
+    // chamfering a vertex means chamfering every edge that meets it
+    app.selV.forEach(function (v) {
+      (T.outgoing.get(v) || []).forEach(function (h) {
+        edges.push([T.he[h].a, T.he[h].b]);
+      });
+    });
+  } else return;
+  if (!edges.length) return;
+  pushUndo();
+  var r = chamferEdges(app.mesh, edges, app.amount);
+  if (!r) { app.undo.pop(); return; }
+  app.mesh = r.mesh;
+  app.selV.clear(); app.selE.clear();
+  app.selF = new Set(r.created);             // land in Face mode on the new faces
+  app.mode = MODE.FACE;
+  refresh();
+}
+
+function selectAll() {
+  app.selV.clear(); app.selE.clear(); app.selF.clear();
+  var i;
+  if (app.mode === MODE.VERT) for (i = 0; i < app.mesh.P.length; i++) app.selV.add(i);
+  else if (app.mode === MODE.FACE) for (i = 0; i < app.mesh.F.length; i++) app.selF.add(i);
+  else app.topo.edges.forEach(function (e, k) { app.selE.add(k); });
+  refresh();
+}
+function clearSelection() { app.selV.clear(); app.selE.clear(); app.selF.clear(); refresh(); }
+
+/* ----------------------------------------------------------------- input */
+var stage = document.getElementById("stage");
+var hint = document.getElementById("hint");
+var ptrs = new Map(), drag = null;
+
+function pts() { var a = []; ptrs.forEach(function (p) { a.push(p); }); return a; }
+function dismissHint() { if (hint && !hint.classList.contains("gone")) hint.classList.add("gone"); }
+
+stage.addEventListener("pointerdown", function (e) {
+  ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (stage.setPointerCapture) { try { stage.setPointerCapture(e.pointerId); } catch (err) {} }
+  if (ptrs.size === 1) {
+    var h = gizmoHandleAt(e.clientX, e.clientY);
+    if (h >= 0) { beginGizmo(h, e.clientX, e.clientY); drag = { kind: "giz" }; }
+    else drag = { kind: "orbit", yaw: cam.yaw, pitch: cam.pitch,
+                  sx: e.clientX, sy: e.clientY, moved: 0 };
+  } else if (ptrs.size === 2) {
+    var a = pts();
+    drag = { kind: "pan", cx: (a[0].x + a[1].x) / 2, cy: (a[0].y + a[1].y) / 2,
+             gap: Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y) || 1,
+             target: cam.target.slice(), dist: cam.dist };
+  }
+  e.preventDefault();
+});
+
+stage.addEventListener("pointermove", function (e) {
+  if (!ptrs.has(e.pointerId) || !drag) return;
+  ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (drag.kind === "giz") { dragGizmo(e.clientX, e.clientY); dismissHint(); }
+  else if (drag.kind === "orbit" && ptrs.size === 1) {
+    var dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
+    drag.moved = Math.max(drag.moved, Math.hypot(dx, dy));
+    cam.yaw = drag.yaw + dx * 0.0075;
+    cam.pitch = Math.max(-1.45, Math.min(1.45, drag.pitch - dy * 0.0075));
+    updateCamera();
+  } else if (drag.kind === "pan" && ptrs.size === 2) {
+    var a = pts();
+    var cx = (a[0].x + a[1].x) / 2, cy = (a[0].y + a[1].y) / 2;
+    var gap = Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y) || 1;
+    cam.dist = Math.max(1.2, Math.min(60, drag.dist * (drag.gap / gap)));
+    userZoomed = true;
+    var perPx = (2 * cam.dist * Math.tan(FOV * 0.5)) / cssH;
+    cam.target = add(drag.target, add(scale(cam.right, -(cx - drag.cx) * perPx),
+                                      scale(cam.up, (cy - drag.cy) * perPx)));
+    updateCamera();
+    dismissHint();
+  }
+  e.preventDefault();
+});
+
+function endPointer(e) {
+  if (!ptrs.has(e.pointerId)) return;
+  ptrs.delete(e.pointerId);
+  if (drag && drag.kind === "orbit" && drag.moved < 6 && ptrs.size === 0) {
+    toggleSelection(pickAt(e.clientX, e.clientY));   // a tap toggles membership
+    dismissHint();
+    refresh();
+  }
+  if (drag && drag.kind === "giz" && ptrs.size === 0) giz.axis = -1;
+  if (!ptrs.size) drag = null;
+  else if (ptrs.size === 1) {
+    var a = pts()[0];
+    drag = { kind: "orbit", yaw: cam.yaw, pitch: cam.pitch, sx: a.x, sy: a.y, moved: 99 };
+  }
+}
+stage.addEventListener("pointerup", endPointer);
+stage.addEventListener("pointercancel", endPointer);
+
+stage.addEventListener("wheel", function (e) {
+  cam.dist = Math.max(1.2, Math.min(60, cam.dist * (1 + Math.sign(e.deltaY) * 0.09)));
+  userZoomed = true;
+  updateCamera(); dismissHint(); e.preventDefault();
+}, { passive: false });
+
+document.addEventListener("touchmove", function (e) { e.preventDefault(); }, { passive: false });
+["gesturestart","gesturechange","gestureend"].forEach(function (n) {
+  document.addEventListener(n, function (e) { e.preventDefault(); });
+});
+
+/* -------------------------------------------------------------------- UI */
+var modeBtns = [document.getElementById("mVert"), document.getElementById("mEdge"),
+                document.getElementById("mFace")];
+var toolBtns = [document.getElementById("tSel"), document.getElementById("tMov"),
+                document.getElementById("tRot"), document.getElementById("tScl")];
+var bExtrude = document.getElementById("opExtrude"), bChamfer = document.getElementById("opChamfer");
+var bUndo = document.getElementById("opUndo"), bRedo = document.getElementById("opRedo");
+
+modeBtns.forEach(function (b, i) {
+  b.addEventListener("click", function () { app.mode = i; refresh(); });
+});
+toolBtns.forEach(function (b, i) {
+  b.addEventListener("click", function () { app.tool = i; refresh(); });
+});
+bExtrude.addEventListener("click", doExtrude);
+bChamfer.addEventListener("click", doChamfer);
+document.getElementById("opAll").addEventListener("click", selectAll);
+document.getElementById("opNone").addEventListener("click", clearSelection);
+bUndo.addEventListener("click", function () {
+  if (!app.undo.length) return;
+  app.redo.push(snapshot()); restore(app.undo.pop());
+});
+bRedo.addEventListener("click", function () {
+  if (!app.redo.length) return;
+  app.undo.push(snapshot()); restore(app.redo.pop());
+});
+document.getElementById("opReset").addEventListener("click", function () {
+  pushUndo();
+  app.mesh = boxMesh(2, 2, 2);
+  cam.yaw = -0.72; cam.pitch = 0.46; cam.target = [0, 0, 0];
+  userZoomed = false; cam.dist = fitDistance();
+  updateCamera();
+  app.selV.clear(); app.selE.clear(); app.selF.clear();
+  refresh();
+});
+
+var kAmt = document.getElementById("kAmt"), vAmt = document.getElementById("vAmt");
+kAmt.addEventListener("input", function () {
+  app.amount = parseFloat(kAmt.value); vAmt.textContent = app.amount.toFixed(2);
+});
+
+document.addEventListener("keydown", function (e) {
+  if (e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
+  var k = e.key.toLowerCase();
+  if ((e.ctrlKey || e.metaKey) && k === "z") { (e.shiftKey ? bRedo : bUndo).click(); e.preventDefault(); return; }
+  if (k === "1") { app.mode = MODE.VERT; refresh(); }
+  else if (k === "2") { app.mode = MODE.EDGE; refresh(); }
+  else if (k === "3") { app.mode = MODE.FACE; refresh(); }
+  else if (k === "q") { app.tool = TOOL.SELECT; refresh(); }
+  else if (k === "w") { app.tool = TOOL.MOVE; refresh(); }
+  else if (k === "e") { app.tool = TOOL.ROTATE; refresh(); }
+  else if (k === "r") { app.tool = TOOL.SCALE; refresh(); }
+  else if (k === "a") selectAll();
+  else return;
+  e.preventDefault();
+});
+
+var sCount = document.getElementById("sCount"), sSel = document.getElementById("sSel"),
+    sTopo = document.getElementById("sTopo");
+
+function refresh() {
+  rebuild();
+  var m = app.mesh, n = selectionCount();
+  var noun = app.mode === MODE.VERT ? "vert" : app.mode === MODE.EDGE ? "edge" : "face";
+  sCount.textContent = m.F.length + (m.F.length === 1 ? " face" : " faces");
+  sSel.textContent = n + " " + noun + (n === 1 ? "" : "s") + " selected";
+  sTopo.innerHTML = "V<b>" + m.P.length + "</b> E<b>" + app.topo.edges.size +
+                    "</b> F<b>" + m.F.length + "</b>";
+  modeBtns.forEach(function (b, i) { b.setAttribute("aria-pressed", i === app.mode ? "true" : "false"); });
+  toolBtns.forEach(function (b, i) { b.setAttribute("aria-pressed", i === app.tool ? "true" : "false"); });
+  bExtrude.disabled = !(app.mode === MODE.FACE && n > 0);
+  bChamfer.disabled = !(app.mode !== MODE.FACE && n > 0);
+  bUndo.disabled = !app.undo.length;
+  bRedo.disabled = !app.redo.length;
+}
+
+/* ------------------------------------------------------------------ loop */
+function tick() {
+  requestAnimationFrame(tick);
+  draw();
+}
+window.addEventListener("resize", resize);
+window.addEventListener("orientationchange", function () { setTimeout(resize, 220); });
+
+resize();
+refresh();
+requestAnimationFrame(tick);
+
+})();
+</script>
+<!--CONTENT-END-->
+</body>
+</html>
