@@ -274,7 +274,7 @@ var SPEC = [
     { k:"logA",      l:"Amplitude A",          min:-5,  max:-1.6,st:0.02, v:-3.07,u:"",     sim:1, fmt:"exp" },
     { k:"dirPower",  l:"Directional power",    min:0.2, max:8,   st:0.1,  v:2,    u:"",     sim:1 },
     { k:"against",   l:"Against-wind damping", min:0,   max:1,   st:0.01, v:0.07, u:"",     sim:1 },
-    { k:"cutoff",    l:"Short-wave cutoff ℓ",  min:0,   max:6,   st:0.1,  v:1,    u:" m",   sim:1 },
+    { k:"cutoff",    l:"Short-wave cutoff ℓ",  min:0,   max:2,   st:0.01, v:0.12, u:" m",   sim:1 },
     { k:"patch",     l:"Patch size L",         min:50,  max:1000,st:10,   v:200,  u:" m",   sim:1 }
   ]},
   { g: "Dispersion", note: "eq. 33 – 35", items: [
@@ -286,6 +286,10 @@ var SPEC = [
     { k:"choppy",  l:"Choppiness λ",   min:0,  max:2.5, st:0.05, v:1.3 },
     { k:"foamThr", l:"Foam threshold", min:-0.5, max:1.5, st:0.02, v:1.02 },
     { k:"foamAmt", l:"Foam amount",    min:0,  max:1,   st:0.02, v:0.75 }
+  ]},
+  { g: "Grid", note: "viewport mesh", items: [
+    { k:"gridExt", l:"Grid extent",  min:300, max:6000, st:100, v:2600, u:" m", grid:1 },
+    { k:"gridPow", l:"Grid falloff", min:1.2, max:4.5,  st:0.1, v:2.4,  u:"",   grid:1 }
   ]},
   { g: "Surface", note: "shading", items: [
     { k:"sunEl", l:"Sun elevation", min:-1.5, max:60,  st:0.5,  v:9,  u:"°" },
@@ -560,29 +564,49 @@ gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_
 
 var R = { N: 0, stages: 0 };
 function F32(w,h,data){ return tex(w,h,gl.RGBA32F,gl.RGBA,gl.FLOAT,gl.NEAREST,gl.CLAMP_TO_EDGE,data); }
-function F16(w,h){ return tex(w,h,gl.RGBA16F,gl.RGBA,gl.HALF_FLOAT,gl.LINEAR,gl.REPEAT,null); }
+var canFilterFloat = !!gl.getExtension("OES_texture_float_linear");
+function SURF(w,h){
+  return canFilterFloat
+    ? tex(w,h,gl.RGBA32F,gl.RGBA,gl.FLOAT,gl.LINEAR,gl.REPEAT,null)
+    : tex(w,h,gl.RGBA16F,gl.RGBA,gl.HALF_FLOAT,gl.LINEAR,gl.REPEAT,null);
+}
 
+var allocNote = "";
 function allocate(N) {
+  var prev = R.N;
+  var bt = butterflyTexture(N), made = {};
+  try {
+    made.but  = F32(N, bt.stages, bt.data);   // N wide, one row per stage
+    made.h0   = F32(N, N, null);
+    made.pA = F32(N,N,null); made.pB = F32(N,N,null);
+    made.qA = F32(N,N,null); made.qB = F32(N,N,null);
+    made.disp = SURF(N,N); made.grad = SURF(N,N);
+    made.fbP = fbo([made.pA, made.pB]);
+    made.fbQ = fbo([made.qA, made.qB]);
+    made.fbOut = fbo([made.disp, made.grad]);
+  } catch (e) { made.fbP = null; }
+  if (!made.fbP || !made.fbQ || !made.fbOut || gl.getError() !== gl.NO_ERROR) {
+    Object.keys(made).forEach(function (k) {
+      if (!made[k]) return;
+      if (k.indexOf("fb") === 0) gl.deleteFramebuffer(made[k]); else gl.deleteTexture(made[k]);
+    });
+    if (!prev) { bail("Could not create float framebuffers."); return false; }
+    allocNote = "N=" + N + " would not fit — stayed at " + prev;
+    return false;                              // the running sim is untouched
+  }
   ["but","h0","pA","pB","qA","qB","disp","grad"].forEach(function (k) {
     if (R[k]) gl.deleteTexture(R[k]);
   });
   ["fbP","fbQ","fbOut"].forEach(function (k) { if (R[k]) gl.deleteFramebuffer(R[k]); });
-  R.N = N;
-  var bt = butterflyTexture(N);
-  R.stages = bt.stages;
-  R.but  = F32(N, bt.stages, bt.data);      // N wide, one row per stage
-  R.h0   = F32(N, N, null);
-  R.pA = F32(N,N,null); R.pB = F32(N,N,null);
-  R.qA = F32(N,N,null); R.qB = F32(N,N,null);
-  R.disp = F16(N,N); R.grad = F16(N,N);
-  R.fbP = fbo([R.pA, R.pB]); R.fbQ = fbo([R.qA, R.qB]); R.fbOut = fbo([R.disp, R.grad]);
-  if (!R.fbP || !R.fbQ || !R.fbOut) { bail("Could not create float framebuffers."); return false; }
+  Object.keys(made).forEach(function (k) { R[k] = made[k]; });
+  R.N = N; R.stages = bt.stages; allocNote = "";
   uploadH0();
   return true;
 }
 
-var lastVariance = 0;
+var lastVariance = 0, h0BuildMs = 0;
 function uploadH0() {
+  var t0 = (performance && performance.now) ? performance.now() : Date.now();
   P.N = R.N;
   var data = buildH0(P);
   gl.bindTexture(gl.TEXTURE_2D, R.h0);
@@ -594,6 +618,7 @@ function uploadH0() {
     v += (phillips(kx, kz, P) + phillips(-kx, -kz, P)) * dk * dk;
   }
   lastVariance = v;
+  h0BuildMs = ((performance && performance.now) ? performance.now() : Date.now()) - t0;
 }
 
 function drawQuad(p) {
@@ -679,7 +704,7 @@ var grid = { vbo: gl.createBuffer(), ibo: gl.createBuffer(), count: 0, G: 0 };
 // Vertex density is warped toward the viewer: |u|^2.4 puts most of the grid in
 // the near field where waves are resolvable, while still reaching the horizon.
 function buildGrid(Gn) {
-  var EXT = 2600, POW = 2.4, i, j, n = 0;
+  var EXT = P.gridExt, POW = P.gridPow, i, j, n = 0;
   var v = new Float32Array((Gn+1)*(Gn+1)*2);
   for (j = 0; j <= Gn; j++) for (i = 0; i <= Gn; i++) {
     var u = i/Gn*2 - 1, w = j/Gn*2 - 1;
@@ -765,7 +790,7 @@ function render() {
 }
 
 /* -------------------------------------------------------------------- UI */
-var ui = { wire: false, paused: false, dirty: true, meshG: 288 };
+var ui = { wire: false, paused: false, dirty: true, pendingSim: false, meshG: 288 };
 var host = document.getElementById("params");
 
 function segment(label, options, current, onPick) {
@@ -796,8 +821,9 @@ function fmt(it) {
 
 function buildUI() {
   host.innerHTML = "";
-  segment("Resolution", [{l:"64",v:64},{l:"128",v:128},{l:"256",v:256},{l:"512",v:512}],
-    function(){ return R.N; }, function (v) { if (!allocate(v)) return; refreshReadout(); });
+  segment("Resolution", [{l:"64",v:64},{l:"128",v:128},{l:"256",v:256},
+                         {l:"512",v:512},{l:"1024",v:1024},{l:"2048",v:2048}],
+    function(){ return R.N; }, function (v) { allocate(v); refreshReadout(); });
   segment("Mesh detail", [{l:"192",v:192},{l:"288",v:288},{l:"384",v:384},
                           {l:"512",v:512},{l:"768",v:768},{l:"1024",v:1024}],
     function(){ return ui.meshG; }, function (v) { ui.meshG = v; buildGrid(v); refreshReadout(); });
@@ -818,8 +844,14 @@ function buildUI() {
         P[it.k] = parseFloat(inp.value);
         derive();
         out.textContent = fmt(it);
-        if (it.sim) ui.dirty = true;
+        if (it.grid) buildGrid(ui.meshG);
+        // A big h0 rebuild would stutter on every slider tick, so past a
+        // threshold it waits for the release (the change event) instead.
+        if (it.sim) { if (h0BuildMs < 25) ui.dirty = true; else ui.pendingSim = true; }
         refreshReadout();
+      });
+      inp.addEventListener("change", function () {
+        if (it.sim && ui.pendingSim) { ui.pendingSim = false; ui.dirty = true; }
       });
       d.appendChild(lab); d.appendChild(out); d.appendChild(inp);
       host.appendChild(d);
@@ -833,12 +865,22 @@ function refreshReadout() {
   var hs = 4*Math.sqrt(Math.max(lastVariance, 0));
   var nt = grid.count/3;
   var tris = nt >= 1e6 ? (nt/1e6).toFixed(2) + "M" : Math.round(nt/1000) + "k";
-  var shortest = 2*P.patch/R.N, longest = P.patch;
+  // Two independent ceilings on detail, and it is worth seeing which one bites:
+  // the grid's Nyquist wavelength, and where the spectrum's cutoff rolls off.
+  var nyq = 2*P.patch/R.N, cut = 2*Math.PI*P.cutoff;
+  var specBound = cut > nyq;
+  var mark = function (on, txt) { return on ? "<b>" + txt + "</b>" : txt; };
+  var surfBytes = canFilterFloat ? 16 : 8;
+  var vram = (R.N*R.N*(16*5 + surfBytes*2) + R.N*R.stages*16) / 1048576;
   readout.innerHTML =
-    "H<sub>s</sub> <b>" + hs.toFixed(2) + " m</b> &nbsp;·&nbsp; " +
-    "waves <b>" + shortest.toFixed(1) + "–" + longest.toFixed(0) + " m</b> &nbsp;·&nbsp; " +
-    R.N + "&sup2; grid, <b>" + (2*R.stages + 2) + "</b> passes/frame &nbsp;·&nbsp; " +
-    "<b>" + tris + "</b> tris &nbsp;·&nbsp; <b>" + Math.round(fps) + "</b> fps";
+    "H<sub>s</sub> <b>" + hs.toFixed(2) + " m</b> &nbsp;·&nbsp; waves " + P.patch.toFixed(0) +
+    " m &rarr; " + mark(!specBound, nyq.toFixed(2) + " m grid") + " &nbsp;·&nbsp; cutoff " +
+    mark(specBound, cut.toFixed(2) + " m") + "<br>" +
+    R.N + "&sup2; spectrum, <b>" + (2*R.stages + 2) + "</b> passes &nbsp;·&nbsp; <b>" + tris +
+    "</b> tris &nbsp;·&nbsp; " + vram.toFixed(0) + " MB &nbsp;·&nbsp; <b>" +
+    Math.round(fps) + "</b> fps" +
+    (allocNote ? " &nbsp;·&nbsp; <b>" + allocNote + "</b>" : "") +
+    (h0BuildMs > 25 ? " &nbsp;·&nbsp; h0 " + Math.round(h0BuildMs) + " ms" : "");
 }
 
 document.getElementById("bWire").addEventListener("click", function (e) {
@@ -923,6 +965,18 @@ window.oceanDebug = {
     buildUI(); refreshReadout();
   },
   simulateAt: function (t) { simulate(t); },
+  // rms of the finished slope map: the statistic that reads as surface texture,
+  // and unlike a screenshot it does not change when the seed re-rolls
+  rmsSlope: function () {
+    var n = R.N, buf = new Float32Array(n*n*4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, R.fbOut);
+    gl.readBuffer(gl.COLOR_ATTACHMENT1);
+    gl.readPixels(0, 0, n, n, gl.RGBA, gl.FLOAT, buf);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    var s = 0;
+    for (var i = 0; i < n*n; i++) s += buf[i*4]*buf[i*4] + buf[i*4+1]*buf[i*4+1];
+    return Math.sqrt(s/(n*n));
+  },
   // the packed complex FFT result, before the (-1)^(x+y) recentring
   readFFT: function (which) {
     var n = R.N, out = new Float32Array(n*n*4);

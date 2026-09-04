@@ -29,41 +29,74 @@ directional power, against-wind damping, short-wave cutoff *ℓ*, patch size *L*
 grid resolution *N*, seed.
 **Dispersion** (eq. 33–35) — depth (0 = deep water), loop period *T*, time scale.
 **Displacement** (eq. 44) — choppiness *λ*, foam threshold, foam amount.
+**Grid** — viewport mesh extent and falloff.
 **Surface** — sun elevation and azimuth, exposure, eye height.
 
-Grid resolution *N* runs 64–512; mesh detail runs 192–1024, which is 74k to
-**2.10M triangles**. The two are independent: *N* sets how much wave detail
-exists, mesh detail sets how finely the grid samples it.
+Grid resolution *N* runs 64–2048; mesh detail runs 192–1024 (74k to **2.10M
+triangles**); grid extent and falloff shape where those vertices land. The three
+are independent, and the section below is about which one is actually limiting
+you.
 
 Drag to look around, wheel to change eye height. `window.oceanDebug` exposes the
 spectrum functions and a float readback of the FFT result, which is what the
 verification below uses.
 
-## Does more mesh density pay off?
+## Where the detail actually comes from
 
-Yes, and with clean geometric convergence. Freezing time and changing only the
-mesh, the mean per-pixel change is:
+Three independent ceilings, and it is worth knowing which one is binding —
+the readout names it:
 
-| step | mean &#124;Δ&#124; (of 255) |
+| ceiling | set by |
 | --- | --- |
-| 288 → 512 | 1.43 |
-| 512 → 1024 | 0.68 |
+| shortest wave in the spectrum | the short-wave cutoff, `exp(−k²ℓ²)`, which rolls off at **2πℓ** |
+| shortest wave the FFT grid can hold | Nyquist, **2L/N** |
+| shortest wave the viewport mesh can draw | grid falloff and extent vs mesh detail |
 
-It halves per doubling, and it is the *same* at N=256/L=200 m (0.78 m texels),
-N=512/L=200 m (0.39 m) and N=256/L=80 m (0.31 m) — so the grid, not the
-displacement texture, is what those vertices are resolving. Nothing is wasted,
-but the returns halve each step, so 512 is the sweet spot on most hardware and
-1024 is there for a still frame.
+**The cutoff dominates everything, and it is easy to set far too high.** rms
+surface slope — the statistic the eye reads as texture — measured at L = 200 m,
+14 m/s:
+
+| N | ℓ = 1.0 m | ℓ = 0.12 m |
+| --- | --- | --- |
+| 128 | 0.0838 | 0.1003 |
+| 256 | 0.0838 | 0.1085 |
+| 512 | 0.0838 | 0.1135 |
+| 1024 | 0.0838 | 0.1146 |
+| 2048 | 0.0838 | 0.1146 |
+
+At ℓ = 1.0 the number **does not move at all** from N = 128 to N = 2048. That
+cutoff rolls off at 2πℓ ≈ 6.3 m, so 98% of the slope energy sits above 5 m and
+*nothing* survives below 1.5 m — the spectrum is saturated by N = 128 and every
+extra texel is computing zeros. Raising the resolution is a no-op until the
+cutoff is lowered. (This was the original default, and it was wrong.) Read back
+off the GPU's own slope map the same thing holds: flat 0.088 → 0.082 at ℓ = 1.0,
+climbing 0.1033 → 0.1132 at ℓ = 0.12.
+
+A cutoff matched to the grid is roughly **ℓ ≈ L / (πN)**. Below that the
+spectrum carries waves the grid cannot represent and they alias; above it, grid
+resolution is wasted.
+
+Mesh density is the third ceiling and converges cleanly on its own — freezing
+time and changing only the mesh gives a mean per-pixel change of 1.43/255 for
+288 → 512 and 0.68 for 512 → 1024, halving per doubling. Because the grid warps
+vertices toward the viewer as `|u|^falloff`, both the falloff and the extent are
+exposed: at the default 2.4 the near field takes most of the vertices and the
+mid field, where most of the visible water is, stays comparatively coarse.
 
 The Jacobian that drives foam is computed **in the permute pass, not per
 vertex**. It varies per texel, so at a 1024² grid computing it per vertex meant
-five texture fetches for 1.05M vertices — 5M fetches a frame for a quantity with
-only N² distinct values. Moving it into the permute pass cut the vertex shader
-to one fetch and made the foam slightly sharper as a side effect, because it now
-uses exact texel neighbours with wrapping rather than interpolated samples at
-arbitrary grid positions.
+five texture fetches for 1.05M vertices — 5M a frame for a quantity with only N²
+distinct values.
 
-## Three details that matter
+## Pushing it until it breaks
+
+N = 2048 runs: 24 passes, **448 MB** of float textures, and a ~2.8 s freeze
+while h0 is built on the CPU. All three numbers are in the readout, and h0
+rebuilds wait for slider release once they cost more than 25 ms. If an
+allocation fails the previous resolution is kept and the readout says so, rather
+than the page dying.
+
+## Three details that matter## Three details that matter
 
 **The conjugate term must be the mirrored `h₀(−k)`, not a fresh random draw.**
 Drawing it independently is a common shortcut, but it breaks the Hermitian
@@ -115,9 +148,13 @@ about as oceanography says it should:
   Mesh detail cannot fix this; only a smaller *L*, a larger *N*, or several
   FFTs at different patch sizes summed together, which is what production
   systems do and is the obvious next step.
-- **The grid extends to 2600 m** with a `|u|^2.4` warp toward the viewer. About
-  a third of its vertices land beyond the 1500 m displacement fade, where the
-  water is flat — the price of reaching the horizon with one draw.
+- **The grid warp is a compromise.** At the default extent of 2600 m about a
+  third of the vertices land beyond the 1500 m displacement fade, where the
+  water is flat — the price of reaching the horizon in one draw. Both extent
+  and falloff are exposed so you can spend them differently.
+- **Displacement and slope maps are RGBA32F** where the driver can filter them,
+  falling back to 16F. Half-float throws away short-wave detail, which is small
+  next to the swell it rides on.
 - **Foam is a Jacobian threshold, not simulated.** `J < 1` marks where the
   horizontal displacement is compressing the surface. It has no advection,
   persistence or decay, so foam appears and vanishes with the wave rather than
