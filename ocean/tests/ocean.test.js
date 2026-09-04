@@ -30,8 +30,8 @@ function spectraAt(h0, p, t) {
     const hi = h0[o]*s + h0[o+1]*c - h0[o+2]*s + h0[o+3]*c;
     H[q] = hr; H[q+1] = hi;
     const kxn = k > 1e-9 ? kx/k : 0, kzn = k > 1e-9 ? kz/k : 0;
-    DX[q] =  hi*kxn; DX[q+1] = -hr*kxn;
-    DZ[q] =  hi*kzn; DZ[q+1] = -hr*kzn;
+    DX[q] = -hi*kxn; DX[q+1] =  hr*kxn;     // +i k_hat h
+    DZ[q] = -hi*kzn; DZ[q+1] =  hr*kzn;
     SX[q] = -hi*kx;  SX[q+1] =  hr*kx;
     SZ[q] = -hi*kz;  SZ[q+1] =  hr*kz;
   }
@@ -145,6 +145,38 @@ console.log('surface (eq. 42 - 44)');
   }
   ck('spectral slope matches finite differences', Math.sqrt(num/den) < 0.05,
      `relative rms ${Math.sqrt(num/den).toFixed(3)}`);
+}
+
+console.log('choppy displacement (eq. 44)');
+{
+  // The sign of the displacement decides whether choppiness sharpens the
+  // crests or the troughs, and getting it backwards looks plausible enough at
+  // a glance to survive review - it shipped once. Pin it with a statistic:
+  // mass must converge where the surface is high, so the divergence of D has
+  // to be negatively correlated with height. Foam follows the same sign,
+  // which is why it belongs on crests rather than in troughs.
+  const p = P({ N:128, cutoff:0.3 });
+  const h0 = C.buildH0(p), sp = spectraAt(h0, p, 3.0);
+  const N = p.N, ds = p.patch/N;
+  const h = ifft2d(sp.H, N), dx = ifft2d(sp.DX, N), dz = ifft2d(sp.DZ, N);
+  const at = (f,i,j) => f[((((j%N)+N)%N)*N + (((i%N)+N)%N))*2];
+  let sh=0, sd=0, shh=0, sdd=0, shd=0, sj=0, sjj=0, shj=0, n=0;
+  const lam = 1.0;
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const axx=(at(dx,i+1,j)-at(dx,i-1,j))/(2*ds), azz=(at(dz,i,j+1)-at(dz,i,j-1))/(2*ds);
+    const axz=(at(dx,i,j+1)-at(dx,i,j-1))/(2*ds), azx=(at(dz,i+1,j)-at(dz,i-1,j))/(2*ds);
+    const div = axx + azz;
+    const J = (1+lam*axx)*(1+lam*azz) - lam*lam*axz*azx;
+    const H = at(h,i,j);
+    sh+=H; sd+=div; shh+=H*H; sdd+=div*div; shd+=H*div;
+    sj+=J; sjj+=J*J; shj+=H*J; n++;
+  }
+  const corr = (sa,sb,saa,sbb,sab) => { const a=sa/n, b=sb/n;
+    return (sab/n - a*b)/Math.sqrt((saa/n - a*a)*(sbb/n - b*b)); };
+  const cd = corr(sh,sd,shh,sdd,shd), cj = corr(sh,sj,shh,sjj,shj);
+  ck('displacement pulls mass toward the crests', cd < -0.3, `corr(h, div D) = ${cd.toFixed(3)}`);
+  ck('the surface compresses at crests, so foam lands there', cj < -0.3,
+     `corr(h, Jacobian) = ${cj.toFixed(3)}`);
 }
 
 console.log('scaling and looping');
