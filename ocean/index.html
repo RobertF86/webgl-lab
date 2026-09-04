@@ -1,0 +1,938 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#080D12">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="description" content="Tessendorf's Simulating Ocean Water implemented on the GPU, with the Phillips spectrum, dispersion, choppiness and foam parameters exposed.">
+<!--CONTENT-START-->
+<title>Phillips Spectrum Ocean</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#080D12; --panel:rgba(13,19,25,.90); --panel-solid:#0D1319;
+  --line:rgba(140,180,200,.14); --line-strong:rgba(140,180,200,.30);
+  --text:#DCE7ED; --muted:#76878F; --dim:#4E5D66;
+  --accent:#F0B45C; --accent-dim:#8A6A34;
+  --shadow:0 1px 2px rgba(0,0,0,.5), 0 14px 40px rgba(0,0,0,.5);
+}
+*{box-sizing:border-box;}
+html,body{height:100%;margin:0;padding:0;}
+body{
+  background:var(--bg); color:var(--text);
+  font-family:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  overflow:hidden; overscroll-behavior:none;
+  -webkit-user-select:none; user-select:none;
+  -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent;
+  touch-action:none;
+}
+#stage{position:fixed;inset:0;touch-action:none;}
+#gl{display:block;width:100%;height:100%;touch-action:none;}
+
+.plate{
+  position:fixed; z-index:2; pointer-events:none;
+  top:max(14px,env(safe-area-inset-top)); left:max(14px,env(safe-area-inset-left));
+  max-width:min(44ch,calc(100vw - 30px));
+  padding:10px 13px 11px; border-radius:12px;
+  background:var(--panel); border:1px solid var(--line); box-shadow:var(--shadow);
+  -webkit-backdrop-filter:blur(16px) saturate(1.3); backdrop-filter:blur(16px) saturate(1.3);
+}
+.plate h1{
+  margin:0; font-family:Spectral,Georgia,serif; font-weight:600;
+  font-size:19px; letter-spacing:.005em; color:var(--text);
+}
+.plate .cite{
+  margin:3px 0 0; font-family:Spectral,Georgia,serif; font-style:italic;
+  font-size:12.5px; line-height:1.45; color:var(--muted);
+}
+.plate .read{ margin:7px 0 0; font-size:10px; letter-spacing:.02em; color:var(--dim); }
+.plate .read b{ color:var(--accent); font-weight:500; }
+
+.rack{
+  position:fixed; z-index:3; display:flex; flex-direction:column;
+  top:max(14px,env(safe-area-inset-top)); right:max(14px,env(safe-area-inset-right));
+  width:288px; max-height:calc(100vh - max(28px,env(safe-area-inset-top)) - 28px);
+  background:var(--panel); border:1px solid var(--line); border-radius:12px;
+  box-shadow:var(--shadow);
+  -webkit-backdrop-filter:blur(16px) saturate(1.3); backdrop-filter:blur(16px) saturate(1.3);
+}
+.rack header{
+  display:flex; align-items:center; gap:8px; padding:9px 11px;
+  border-bottom:1px solid var(--line); flex:0 0 auto;
+}
+.rack header .t{
+  flex:1 1 auto; font-family:Spectral,Georgia,serif; font-size:13px; font-weight:600;
+}
+.rack .body{ overflow-y:auto; overscroll-behavior:contain; padding:4px 11px 11px;
+  -webkit-overflow-scrolling:touch; }
+.rack.closed .body, .rack.closed .foot{ display:none; }
+.rack .foot{ border-top:1px solid var(--line); padding:8px 11px; display:flex;
+  flex-wrap:wrap; gap:4px; flex:0 0 auto; }
+
+h2{
+  margin:13px 0 6px; font-family:Spectral,Georgia,serif; font-size:12px; font-weight:600;
+  letter-spacing:.04em; color:var(--accent); text-transform:none;
+}
+h2 span{ font-family:"JetBrains Mono",monospace; font-size:9px; color:var(--dim);
+  letter-spacing:.03em; margin-left:6px; }
+
+.p{ display:grid; grid-template-columns:1fr auto; align-items:baseline; gap:1px 8px; margin:0 0 7px; }
+.p label{ font-size:10px; letter-spacing:.01em; color:var(--muted); }
+.p output{ font-size:10px; font-variant-numeric:tabular-nums; color:var(--text); }
+.p input{ grid-column:1 / -1; }
+
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:18px;margin:0;
+  background:transparent;cursor:pointer;display:block;}
+input[type=range]::-webkit-slider-runnable-track{height:2px;border-radius:1px;background:var(--line-strong);}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;
+  margin-top:-6px;border-radius:50%;background:var(--accent);border:2px solid var(--panel-solid);}
+input[type=range]::-moz-range-track{height:2px;border-radius:1px;background:var(--line-strong);border:none;}
+input[type=range]::-moz-range-thumb{width:12px;height:12px;border-radius:50%;background:var(--accent);
+  border:2px solid var(--panel-solid);}
+input[type=range]:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px;}
+
+button{font-family:inherit;font-size:10px;font-weight:500;letter-spacing:.04em;
+  color:var(--muted);background:transparent;border:1px solid var(--line);border-radius:7px;
+  padding:6px 9px;min-height:30px;cursor:pointer;white-space:nowrap;
+  transition:background .13s ease,color .13s ease,border-color .13s ease;}
+button:hover{color:var(--text);background:var(--line);}
+button[aria-pressed="true"]{color:var(--bg);background:var(--accent);border-color:var(--accent);}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+.seg{display:flex;gap:3px;margin:0 0 8px;}
+.seg button{flex:1 1 0;}
+
+#fallback{position:fixed;inset:0;z-index:9;display:none;place-content:center;padding:32px;
+  text-align:center;background:var(--bg);}
+#fallback.show{display:grid;}
+#fallback strong{display:block;margin-bottom:10px;font-family:Spectral,Georgia,serif;
+  font-size:16px;font-weight:600;}
+#fallback p{max-width:40ch;margin:0 auto;line-height:1.65;color:var(--muted);font-size:13px;}
+
+@media (max-width: 780px){
+  .rack{ top:auto; left:max(10px,env(safe-area-inset-left)); right:max(10px,env(safe-area-inset-right));
+    bottom:max(10px,env(safe-area-inset-bottom)); width:auto;
+    max-height:min(50vh, 400px); }
+  .rack.closed{ width:max-content; margin-left:auto; }
+  .plate{ max-width:calc(100vw - 20px); padding:8px 11px 9px; }
+  .plate h1{ font-size:15px; }
+  .plate .cite{ font-size:10.5px; line-height:1.38; }
+  .plate .read{ margin-top:5px; font-size:9.5px; }
+}
+@media (prefers-reduced-motion: reduce){ *{transition-duration:.01ms !important;} }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="gl" aria-label="Animated ocean surface simulation"></canvas></div>
+
+<div class="plate">
+  <h1>Phillips Spectrum Ocean</h1>
+  <p class="cite">After Jerry Tessendorf, &ldquo;Simulating Ocean Water&rdquo; &mdash;
+     a Phillips spectrum, evolved by the deep-water dispersion relation and
+     inverted with an FFT on the GPU.</p>
+  <p class="read" id="readout">&nbsp;</p>
+</div>
+
+<div class="rack" id="rack">
+  <header>
+    <span class="t">Parameters</span>
+    <button id="bPause" type="button" aria-pressed="false" title="Pause time">Pause</button>
+    <button id="bFold" type="button" title="Collapse">&minus;</button>
+  </header>
+  <div class="body" id="params"></div>
+  <div class="foot">
+    <button id="bWire" type="button" aria-pressed="false">Wireframe</button>
+    <button id="bSeed" type="button">New seed</button>
+    <button id="bReset" type="button">Defaults</button>
+  </div>
+</div>
+
+<div id="fallback"><div>
+  <strong>WebGL2 with float render targets is required</strong>
+  <p id="fallbackMsg">This page runs the FFT on the GPU, which needs WebGL2 and the
+  EXT_color_buffer_float extension. Safari 15+, Chrome and Firefox all support it.</p>
+</div></div>
+
+<script>
+"use strict";
+(function () {
+
+/* =========================================================================
+   Simulating Ocean Water  -  Tessendorf, SIGGRAPH course notes
+
+   Pipeline, once per frame:
+     1  spectrum pass   h(k,t) = h0(k) e^{iwt} + conj(h0(-k)) e^{-iwt}     (eq 43)
+                        plus the displacement and slope spectra            (eq 44)
+     2  FFT passes      2*log2(N) butterfly passes, horizontal then vertical
+     3  permute pass    the (-1)^(x+y) recentring, into displacement + slope maps
+     4  render          a warped grid displaced in the vertex shader
+
+   Five real fields are needed (h, Dx, Dz, dh/dx, dh/dz). A complex inverse
+   transform of a Hermitian spectrum yields a real field, so two fields ride in
+   one transform - one in the real part, one in the imaginary - and three
+   complex transforms carry all five. They are packed two-per-RGBA-texture and
+   run through the same butterfly passes via multiple render targets.
+   ========================================================================= */
+
+/* <ocean-core> shared with tests/ocean.test.js; do not rename these markers */
+var G = 9.81;
+
+// Phillips spectrum, eq. 40, with the short-wave cutoff from the same section
+function phillips(kx, kz, p) {
+  var k2 = kx*kx + kz*kz;
+  if (k2 < 1e-12) return 0;
+  var L = p.windSpeed*p.windSpeed / G;
+  var wx = Math.cos(p.windDir), wz = Math.sin(p.windDir);
+  var kl = Math.sqrt(k2);
+  var dotk = (kx*wx + kz*wz) / kl;
+  var dir = Math.pow(Math.abs(dotk), p.dirPower);
+  if (dotk < 0) dir *= p.against;                  // running into the wind
+  return p.amplitude * Math.exp(-1/(k2*L*L)) / (k2*k2) * dir
+       * Math.exp(-k2 * p.cutoff * p.cutoff);
+}
+
+function rng(seed) {                               // xorshift, so a seed repeats
+  var s = seed >>> 0 || 1;
+  return function () {
+    s ^= s << 13; s >>>= 0; s ^= s >> 17; s ^= s << 5; s >>>= 0;
+    return s / 4294967296;
+  };
+}
+function gauss(rand) {                             // Box-Muller
+  var u = 0, v;
+  while (u <= 1e-9) u = rand();
+  v = rand();
+  var r = Math.sqrt(-2*Math.log(u));
+  return [r*Math.cos(2*Math.PI*v), r*Math.sin(2*Math.PI*v)];
+}
+
+/* h0, eq. 42. The companion term is conj(h0(-k)) read from the MIRRORED texel,
+   not a fresh random draw: that is what makes the spectrum Hermitian, and a
+   Hermitian spectrum is what makes the inverse transform come out real.
+   The Nyquist row and column are zeroed - n = -N/2 has no +N/2 partner, so the
+   k-weighted fields, whose weight is odd in k, cannot be Hermitian there.
+   Each mode carries a factor dk = 2*pi/L because Phillips is a spectral
+   density; without it the wave height would depend on the resolution.      */
+function buildH0(p) {
+  var N = p.N, rand = rng(p.seed), i, j;
+  var h0 = new Float32Array(N*N*2), dk = 2*Math.PI / p.patch;
+  for (j = 0; j < N; j++) {
+    for (i = 0; i < N; i++) {
+      var kx = 2*Math.PI*(i - N/2) / p.patch, kz = 2*Math.PI*(j - N/2) / p.patch;
+      var g = gauss(rand);
+      var s = (i === 0 || j === 0) ? 0 : Math.sqrt(phillips(kx, kz, p) / 2) * dk;
+      var q = (j*N + i)*2;
+      h0[q] = g[0]*s; h0[q+1] = g[1]*s;
+    }
+  }
+  var out = new Float32Array(N*N*4);
+  for (j = 0; j < N; j++) {
+    for (i = 0; i < N; i++) {
+      var im = (N - i) % N, jm = (N - j) % N;
+      var q2 = (j*N + i)*2, qm = (jm*N + im)*2, o = (j*N + i)*4;
+      out[o]   = h0[q2];  out[o+1] = h0[q2+1];      // h0(k)
+      out[o+2] = h0[qm];  out[o+3] = -h0[qm+1];     // conj(h0(-k))
+    }
+  }
+  return out;
+}
+
+// butterfly lookup: stage on x, element on y; rgba = twiddle.re, twiddle.im,
+// index of the upper input, index of the lower input
+function butterflyTexture(N) {
+  var stages = Math.round(Math.log(N) / Math.LN2);
+  var data = new Float32Array(stages * N * 4), rev = new Int32Array(N), i, s;
+  for (i = 0; i < N; i++) {
+    var r = 0, v = i;
+    for (var b = 0; b < stages; b++) { r = (r << 1) | (v & 1); v >>= 1; }
+    rev[i] = r;
+  }
+  for (s = 0; s < stages; s++) {
+    for (var x = 0; x < N; x++) {
+      var span = 1 << s;
+      var k = (x * (N / (2*span))) % N;
+      // + sign: this is the INVERSE transform
+      var tr = Math.cos(2*Math.PI*k/N), ti = Math.sin(2*Math.PI*k/N);
+      var upper = (x % (2*span)) < span, top, bot;
+      if (s === 0) { top = upper ? rev[x] : rev[x-1]; bot = upper ? rev[x+1] : rev[x]; }
+      else         { top = upper ? x : x - span;      bot = upper ? x + span : x; }
+      var o = (s*N + x)*4;
+      data[o] = tr; data[o+1] = ti; data[o+2] = top; data[o+3] = bot;
+    }
+  }
+  return { data: data, stages: stages };
+}
+/* </ocean-core> */
+
+/* ---------------------------------------------------------------- params */
+var SPEC = [
+  { g: "Spectrum", note: "eq. 40 – 42", items: [
+    { k:"windSpeed", l:"Wind speed",           min:1,   max:32,  st:0.5,  v:12,   u:" m/s", sim:1 },
+    { k:"windDeg",   l:"Wind direction",       min:0,   max:360, st:1,    v:34,   u:"°",    sim:1 },
+    { k:"logA",      l:"Amplitude A",          min:-5,  max:-1.6,st:0.02, v:-3.07,u:"",     sim:1, fmt:"exp" },
+    { k:"dirPower",  l:"Directional power",    min:0.2, max:8,   st:0.1,  v:2,    u:"",     sim:1 },
+    { k:"against",   l:"Against-wind damping", min:0,   max:1,   st:0.01, v:0.07, u:"",     sim:1 },
+    { k:"cutoff",    l:"Short-wave cutoff ℓ",  min:0,   max:6,   st:0.1,  v:1,    u:" m",   sim:1 },
+    { k:"patch",     l:"Patch size L",         min:50,  max:1000,st:10,   v:200,  u:" m",   sim:1 }
+  ]},
+  { g: "Dispersion", note: "eq. 33 – 35", items: [
+    { k:"depth",  l:"Depth",         min:0, max:200, st:1,    v:0, u:" m" },
+    { k:"period", l:"Loop period T",  min:0, max:600, st:10,   v:200, u:" s" },
+    { k:"speed",  l:"Time scale",     min:0, max:3,   st:0.05, v:1, u:"×" }
+  ]},
+  { g: "Displacement", note: "eq. 44", items: [
+    { k:"choppy",  l:"Choppiness λ",   min:0,  max:2.5, st:0.05, v:1.3 },
+    { k:"foamThr", l:"Foam threshold", min:-0.5, max:1.5, st:0.02, v:1.02 },
+    { k:"foamAmt", l:"Foam amount",    min:0,  max:1,   st:0.02, v:0.75 }
+  ]},
+  { g: "Surface", note: "shading", items: [
+    { k:"sunEl", l:"Sun elevation", min:-1.5, max:60,  st:0.5,  v:9,  u:"°" },
+    { k:"sunAz", l:"Sun azimuth",   min:0,    max:360, st:1,    v:44, u:"°" },
+    { k:"expo",  l:"Exposure",      min:0.3,  max:2.6, st:0.05, v:1 },
+    { k:"camH",  l:"Eye height",    min:1.5,  max:70,  st:0.5,  v:11, u:" m" }
+  ]}
+];
+
+var P = { N: 256, seed: 1337, windDir: 0, amplitude: 0 };
+SPEC.forEach(function (grp) { grp.items.forEach(function (it) { P[it.k] = it.v; }); });
+function derive() {
+  P.windDir = P.windDeg * Math.PI / 180;
+  P.amplitude = Math.pow(10, P.logA);
+}
+derive();
+
+/* ------------------------------------------------------------ gl context */
+var canvas = document.getElementById("gl");
+var gl = canvas.getContext("webgl2", { antialias: true, alpha: false, depth: true });
+function bail(msg) {
+  if (msg) document.getElementById("fallbackMsg").textContent = msg;
+  document.getElementById("fallback").classList.add("show");
+}
+if (!gl) { bail(); return; }
+var extCBF = gl.getExtension("EXT_color_buffer_float");
+if (!extCBF) { bail("WebGL2 is available but EXT_color_buffer_float is not, so the FFT cannot render into float textures."); return; }
+gl.getExtension("OES_texture_float_linear");
+
+function sh(t, src, tag) {
+  var s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(tag + ": " + gl.getShaderInfoLog(s));
+  return s;
+}
+function prog(vs, fs, tag) {
+  var p = gl.createProgram();
+  gl.attachShader(p, sh(gl.VERTEX_SHADER, vs, tag + " vs"));
+  gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs, tag + " fs"));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(tag + " link: " + gl.getProgramInfoLog(p));
+  p.u = {}; p.a = {};
+  var n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS), i, d;
+  for (i = 0; i < n; i++) { d = gl.getActiveUniform(p, i); p.u[d.name] = gl.getUniformLocation(p, d.name); }
+  n = gl.getProgramParameter(p, gl.ACTIVE_ATTRIBUTES);
+  for (i = 0; i < n; i++) { d = gl.getActiveAttrib(p, i); p.a[d.name] = gl.getAttribLocation(p, d.name); }
+  p.U = function (k) { return p.u[k] === undefined ? null : p.u[k]; };
+  return p;
+}
+function tex(w, h, internal, format, type, filter, wrap, data) {
+  var t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, format, type, data || null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrap);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrap);
+  return t;
+}
+function fbo(list) {
+  var f = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+  var att = [];
+  for (var i = 0; i < list.length; i++) {
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, list[i], 0);
+    att.push(gl.COLOR_ATTACHMENT0 + i);
+  }
+  gl.drawBuffers(att);
+  var ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return ok ? f : null;
+}
+
+/* ---------------------------------------------------------------- shaders */
+var VS_QUAD = `#version 300 es
+in vec2 aPos;
+void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }`;
+
+var CMUL = `vec2 cmul(vec2 a, vec2 b){ return vec2(a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x); }`;
+
+// eq. 43 and 44: evolve h0 to time t, then form the displacement and slope
+// spectra and pack them two-per-transform
+var FS_SPEC = `#version 300 es
+precision highp float;
+uniform sampler2D uH0;
+uniform float uN, uPatch, uTime, uDepth, uPeriod;
+layout(location=0) out vec4 oA;
+layout(location=1) out vec4 oB;
+` + CMUL + `
+void main(){
+  ivec2 px = ivec2(gl_FragCoord.xy);
+  vec2 k = 6.28318530718 * (vec2(px) - uN*0.5) / uPatch;
+  float kl = length(k);
+  vec4 h0 = texelFetch(uH0, px, 0);
+  float w = (uDepth > 0.0) ? sqrt(9.81*kl*tanh(min(kl*uDepth, 20.0)))
+                           : sqrt(9.81*kl);
+  if (uPeriod > 0.0){ float w0 = 6.28318530718/uPeriod; w = floor(w/w0)*w0; }
+  float ph = w * uTime;
+  vec2 ep = vec2(cos(ph), sin(ph));
+  vec2 h = cmul(h0.xy, ep) + cmul(h0.zw, vec2(ep.x, -ep.y));
+  vec2 kn = kl > 1e-8 ? k/kl : vec2(0.0);
+  vec2 Dx = vec2( h.y, -h.x) * kn.x;     // -i k_hat h
+  vec2 Dz = vec2( h.y, -h.x) * kn.y;
+  vec2 Sx = vec2(-h.y,  h.x) * k.x;      //  i k h
+  vec2 Sz = vec2(-h.y,  h.x) * k.y;
+  oA = vec4(h.x - Dx.y, h.y + Dx.x,      // h + i Dx
+            Dz.x - Sx.y, Dz.y + Sx.x);   // Dz + i Sx
+  oB = vec4(Sz, 0.0, 0.0);
+}`;
+
+// one butterfly stage, horizontally or vertically, on both packed textures
+var FS_BUTTERFLY = `#version 300 es
+precision highp float;
+uniform sampler2D uA, uB, uBut;
+uniform int uStage, uVert;
+layout(location=0) out vec4 oA;
+layout(location=1) out vec4 oB;
+` + CMUL + `
+void main(){
+  ivec2 px = ivec2(gl_FragCoord.xy);
+  int idx = (uVert == 1) ? px.y : px.x;
+  vec4 d = texelFetch(uBut, ivec2(idx, uStage), 0);   // N wide, one row per stage
+  ivec2 pa = (uVert == 1) ? ivec2(px.x, int(d.z)) : ivec2(int(d.z), px.y);
+  ivec2 pb = (uVert == 1) ? ivec2(px.x, int(d.w)) : ivec2(int(d.w), px.y);
+  vec2 w = d.xy;
+  vec4 a = texelFetch(uA, pa, 0), b = texelFetch(uA, pb, 0);
+  oA = vec4(a.xy + cmul(w, b.xy), a.zw + cmul(w, b.zw));
+  vec4 c = texelFetch(uB, pa, 0), e = texelFetch(uB, pb, 0);
+  oB = vec4(c.xy + cmul(w, e.xy), c.zw + cmul(w, e.zw));
+}`;
+
+// the (-1)^(x+y) recentring, unpacked into a displacement map and a slope map
+var FS_PERMUTE = `#version 300 es
+precision highp float;
+uniform sampler2D uA, uB;
+uniform float uChoppy;
+layout(location=0) out vec4 oDisp;
+layout(location=1) out vec4 oGrad;
+void main(){
+  ivec2 px = ivec2(gl_FragCoord.xy);
+  float s = (((px.x + px.y) & 1) == 1) ? -1.0 : 1.0;
+  vec4 A = texelFetch(uA, px, 0) * s;
+  vec4 B = texelFetch(uB, px, 0) * s;
+  oDisp = vec4(A.y * uChoppy, A.x, A.z * uChoppy, 0.0);   // Dx, h, Dz
+  oGrad = vec4(A.w, B.x, 0.0, 0.0);                       // dh/dx, dh/dz
+}`;
+
+var SKY = `
+vec3 skyColor(vec3 dir, vec3 sun){
+  float up = max(dir.y, 0.0);
+  vec3 zenith  = vec3(0.09, 0.20, 0.40);
+  vec3 horizon = vec3(0.56, 0.66, 0.76);
+  vec3 c = mix(horizon, zenith, pow(up, 0.55));
+  float sd = max(dot(dir, sun), 0.0);
+  c += vec3(1.00, 0.55, 0.24) * pow(sd, 7.0) * 0.60;      // glow
+  c += vec3(1.00, 0.88, 0.68) * pow(sd, 1500.0) * 26.0;   // disc
+  float band = pow(1.0 - clamp(abs(dir.y), 0.0, 1.0), 10.0);
+  c = mix(c, vec3(0.70, 0.74, 0.79), band * 0.72);        // horizon haze
+  if (dir.y < 0.0) c = mix(c, vec3(0.05, 0.09, 0.14), clamp(-dir.y*4.0, 0.0, 1.0));
+  return c;
+}
+vec3 tonemap(vec3 c, float e){
+  c *= e;
+  vec3 k = vec3(0.86); vec3 d = max(c - k, vec3(0.0));
+  c = min(c, k) + d / (1.0 + d / (1.0 - k));
+  return pow(c, vec3(1.0/1.05));
+}`;
+
+var FS_SKYBG = `#version 300 es
+precision highp float;
+uniform vec2 uRes; uniform vec3 uSun, uCamR, uCamU, uCamF;
+uniform float uTanHalf, uAspect, uExpo;
+out vec4 o;
+` + SKY + `
+void main(){
+  vec2 uv = (gl_FragCoord.xy / uRes) * 2.0 - 1.0;
+  vec3 d = normalize(uCamR*(uv.x*uTanHalf*uAspect) + uCamU*(uv.y*uTanHalf) + uCamF);
+  o = vec4(tonemap(skyColor(d, uSun), uExpo), 1.0);
+}`;
+
+var VS_OCEAN = `#version 300 es
+in vec2 aXZ;
+uniform mat4 uVP;
+uniform sampler2D uDisp;
+uniform float uPatch, uN, uFoamThr;
+uniform vec3 uCam;
+out vec3 vW; out vec2 vUV; out float vFoam; out float vDist; out float vFade;
+void main(){
+  vec2 uv = aXZ / uPatch;
+  vec3 d = texture(uDisp, uv).xyz;
+  // Past a few hundred metres the grid can no longer resolve a wave, so the
+  // displacement is faded out rather than left to alias into noise.
+  float dist = length(aXZ - uCam.xz);
+  float fade = 1.0 - smoothstep(320.0, 1500.0, dist);
+  vec3 w = vec3(aXZ.x + d.x*fade, d.y*fade, aXZ.y + d.z*fade);
+
+  // Jacobian of the horizontal displacement. Where it drops below 1 the
+  // surface is folding onto itself - that is where a real sea throws foam.
+  float t = 1.0/uN, ds = 2.0*uPatch/uN;
+  vec3 xp = texture(uDisp, uv + vec2(t,0.0)).xyz, xm = texture(uDisp, uv - vec2(t,0.0)).xyz;
+  vec3 zp = texture(uDisp, uv + vec2(0.0,t)).xyz, zm = texture(uDisp, uv - vec2(0.0,t)).xyz;
+  float axx = (xp.x-xm.x)/ds, azx = (xp.z-xm.z)/ds;
+  float axz = (zp.x-zm.x)/ds, azz = (zp.z-zm.z)/ds;
+  float J = (1.0+axx)*(1.0+azz) - axz*azx;
+  vFoam = clamp(uFoamThr - J, 0.0, 1.0) * fade;
+
+  vW = w; vUV = uv; vDist = dist; vFade = fade;
+  gl_Position = uVP * vec4(w, 1.0);
+}`;
+
+var FS_OCEAN = `#version 300 es
+precision highp float;
+in vec3 vW; in vec2 vUV; in float vFoam; in float vDist; in float vFade;
+uniform sampler2D uGrad;
+uniform vec3 uCam, uSun;
+uniform float uExpo, uFoamAmt, uWire;
+out vec4 o;
+` + SKY + `
+void main(){
+  vec2 g = texture(uGrad, vUV).xy * vFade;
+  vec3 N = normalize(vec3(-g.x, 1.0, -g.y));
+  vec3 V = normalize(uCam - vW);
+  float F = 0.02 + 0.98*pow(1.0 - max(dot(N,V), 0.0), 5.0);
+  vec3 R = reflect(-V, N); R.y = max(R.y, 0.015);
+  vec3 refl = skyColor(R, uSun);
+
+  vec3 deep = vec3(0.006, 0.022, 0.040), shallow = vec3(0.016, 0.135, 0.155);
+  vec3 water = mix(deep, shallow, clamp(vW.y*0.26 + 0.42, 0.0, 1.0));
+  // ambient skylight into the body of the water: without it the near field,
+  // where Fresnel is almost nothing, collapses into a flat dark mass
+  water += skyColor(vec3(0.0, 1.0, 0.0), uSun) * 0.055;
+  // sunlight scattered through the body of a crest toward the eye
+  float sss = pow(max(dot(V, -normalize(vec3(uSun.x, 0.0, uSun.z))), 0.0), 3.0);
+  water += vec3(0.05, 0.29, 0.21) * sss * max(vW.y, 0.0) * 0.32;
+
+  vec3 col = mix(water, refl, F);
+  vec3 H = normalize(V + uSun);
+  col += vec3(1.0, 0.94, 0.82) * pow(max(dot(N,H), 0.0), 1100.0) * 32.0 * F;
+
+  float foam = smoothstep(0.02, 0.42, vFoam * uFoamAmt);
+  vec3 foamCol = vec3(0.94, 0.96, 0.98) * (0.62 + 0.38*max(dot(N,uSun), 0.0));
+  col = mix(col, foamCol, foam);
+  col = mix(col, skyColor(normalize(vW - uCam), uSun), smoothstep(600.0, 2800.0, vDist));
+  if (uWire > 0.5) col = mix(col, vec3(0.50, 0.86, 0.96), 0.55);
+  o = vec4(tonemap(col, uExpo), 1.0);
+}`;
+
+var pSpec, pBut, pPerm, pSky, pOcean;
+try {
+  pSpec  = prog(VS_QUAD, FS_SPEC, "spectrum");
+  pBut   = prog(VS_QUAD, FS_BUTTERFLY, "butterfly");
+  pPerm  = prog(VS_QUAD, FS_PERMUTE, "permute");
+  pSky   = prog(VS_QUAD, FS_SKYBG, "sky");
+  pOcean = prog(VS_OCEAN, FS_OCEAN, "ocean");
+} catch (err) { bail("Shader error: " + err.message); return; }
+
+/* -------------------------------------------------------------- resources */
+var quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+
+var R = { N: 0, stages: 0 };
+function F32(w,h,data){ return tex(w,h,gl.RGBA32F,gl.RGBA,gl.FLOAT,gl.NEAREST,gl.CLAMP_TO_EDGE,data); }
+function F16(w,h){ return tex(w,h,gl.RGBA16F,gl.RGBA,gl.HALF_FLOAT,gl.LINEAR,gl.REPEAT,null); }
+
+function allocate(N) {
+  ["but","h0","pA","pB","qA","qB","disp","grad"].forEach(function (k) {
+    if (R[k]) gl.deleteTexture(R[k]);
+  });
+  ["fbP","fbQ","fbOut"].forEach(function (k) { if (R[k]) gl.deleteFramebuffer(R[k]); });
+  R.N = N;
+  var bt = butterflyTexture(N);
+  R.stages = bt.stages;
+  R.but  = F32(N, bt.stages, bt.data);      // N wide, one row per stage
+  R.h0   = F32(N, N, null);
+  R.pA = F32(N,N,null); R.pB = F32(N,N,null);
+  R.qA = F32(N,N,null); R.qB = F32(N,N,null);
+  R.disp = F16(N,N); R.grad = F16(N,N);
+  R.fbP = fbo([R.pA, R.pB]); R.fbQ = fbo([R.qA, R.qB]); R.fbOut = fbo([R.disp, R.grad]);
+  if (!R.fbP || !R.fbQ || !R.fbOut) { bail("Could not create float framebuffers."); return false; }
+  uploadH0();
+  return true;
+}
+
+var lastVariance = 0;
+function uploadH0() {
+  P.N = R.N;
+  var data = buildH0(P);
+  gl.bindTexture(gl.TEXTURE_2D, R.h0);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, R.N, R.N, 0, gl.RGBA, gl.FLOAT, data);
+  // analytic surface variance, so the readout can quote a wave height
+  var v = 0, dk = 2*Math.PI/P.patch;
+  for (var j = 1; j < R.N; j++) for (var i = 1; i < R.N; i++) {
+    var kx = 2*Math.PI*(i - R.N/2)/P.patch, kz = 2*Math.PI*(j - R.N/2)/P.patch;
+    v += (phillips(kx, kz, P) + phillips(-kx, -kz, P)) * dk * dk;
+  }
+  lastVariance = v;
+}
+
+function drawQuad(p) {
+  gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+  gl.enableVertexAttribArray(p.a.aPos);
+  gl.vertexAttribPointer(p.a.aPos, 2, gl.FLOAT, false, 0, 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+function bindTex(p, name, unit, t) {
+  gl.activeTexture(gl.TEXTURE0 + unit);
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.uniform1i(p.U(name), unit);
+}
+
+/* the whole simulation for one frame: spectrum, 2*log2(N) butterflies, permute */
+function simulate(time) {
+  gl.disable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE); gl.disable(gl.BLEND);
+  gl.viewport(0, 0, R.N, R.N);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, R.fbP);
+  gl.useProgram(pSpec);
+  bindTex(pSpec, "uH0", 0, R.h0);
+  gl.uniform1f(pSpec.U("uN"), R.N);
+  gl.uniform1f(pSpec.U("uPatch"), P.patch);
+  gl.uniform1f(pSpec.U("uTime"), time);
+  gl.uniform1f(pSpec.U("uDepth"), P.depth);
+  gl.uniform1f(pSpec.U("uPeriod"), P.period);
+  drawQuad(pSpec);
+
+  var srcIsP = true;
+  gl.useProgram(pBut);
+  for (var vert = 0; vert < 2; vert++) {
+    for (var s = 0; s < R.stages; s++) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, srcIsP ? R.fbQ : R.fbP);
+      bindTex(pBut, "uA", 0, srcIsP ? R.pA : R.qA);
+      bindTex(pBut, "uB", 1, srcIsP ? R.pB : R.qB);
+      bindTex(pBut, "uBut", 2, R.but);
+      gl.uniform1i(pBut.U("uStage"), s);
+      gl.uniform1i(pBut.U("uVert"), vert);
+      drawQuad(pBut);
+      srcIsP = !srcIsP;
+    }
+  }
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, R.fbOut);
+  gl.useProgram(pPerm);
+  bindTex(pPerm, "uA", 0, srcIsP ? R.pA : R.qA);
+  bindTex(pPerm, "uB", 1, srcIsP ? R.pB : R.qB);
+  gl.uniform1f(pPerm.U("uChoppy"), P.choppy);
+  drawQuad(pPerm);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+
+/* ------------------------------------------------------------ grid + view */
+function m4(){ return new Float32Array(16); }
+function perspective(o, fovy, aspect, near, far) {
+  var f = 1/Math.tan(fovy*0.5), nf = 1/(near-far);
+  o.fill(0); o[0]=f/aspect; o[5]=f; o[10]=(far+near)*nf; o[11]=-1; o[14]=2*far*near*nf; return o;
+}
+function lookAt(o, e, c) {
+  var zx=e[0]-c[0], zy=e[1]-c[1], zz=e[2]-c[2];
+  var l=1/Math.hypot(zx,zy,zz); zx*=l; zy*=l; zz*=l;
+  var xx=zz, xy=0, xz=-zx; l=Math.hypot(xx,xy,xz);
+  if (l<1e-6){ xx=1; xz=0; } else { l=1/l; xx*=l; xz*=l; }
+  var yx=zy*xz-zz*xy, yy=zz*xx-zx*xz, yz=zx*xy-zy*xx;
+  o[0]=xx;o[1]=yx;o[2]=zx;o[3]=0; o[4]=xy;o[5]=yy;o[6]=zy;o[7]=0;
+  o[8]=xz;o[9]=yz;o[10]=zz;o[11]=0;
+  o[12]=-(xx*e[0]+xy*e[1]+xz*e[2]); o[13]=-(yx*e[0]+yy*e[1]+yz*e[2]);
+  o[14]=-(zx*e[0]+zy*e[1]+zz*e[2]); o[15]=1; return o;
+}
+function mul(o,a,b){
+  for (var c=0;c<4;c++){ var b0=b[c*4],b1=b[c*4+1],b2=b[c*4+2],b3=b[c*4+3];
+    o[c*4]=a[0]*b0+a[4]*b1+a[8]*b2+a[12]*b3;
+    o[c*4+1]=a[1]*b0+a[5]*b1+a[9]*b2+a[13]*b3;
+    o[c*4+2]=a[2]*b0+a[6]*b1+a[10]*b2+a[14]*b3;
+    o[c*4+3]=a[3]*b0+a[7]*b1+a[11]*b2+a[15]*b3; }
+  return o;
+}
+
+var grid = { vbo: gl.createBuffer(), ibo: gl.createBuffer(), count: 0, G: 0 };
+// Vertex density is warped toward the viewer: |u|^2.4 puts most of the grid in
+// the near field where waves are resolvable, while still reaching the horizon.
+function buildGrid(Gn) {
+  var EXT = 2600, POW = 2.4, i, j, n = 0;
+  var v = new Float32Array((Gn+1)*(Gn+1)*2);
+  for (j = 0; j <= Gn; j++) for (i = 0; i <= Gn; i++) {
+    var u = i/Gn*2 - 1, w = j/Gn*2 - 1;
+    v[n++] = Math.sign(u)*Math.pow(Math.abs(u), POW)*EXT;
+    v[n++] = Math.sign(w)*Math.pow(Math.abs(w), POW)*EXT;
+  }
+  var idx = new Uint32Array(Gn*Gn*6), m = 0;
+  for (j = 0; j < Gn; j++) for (i = 0; i < Gn; i++) {
+    var a = j*(Gn+1)+i, b = a+1, c = a+Gn+1, d = c+1;
+    idx[m++]=a; idx[m++]=c; idx[m++]=b; idx[m++]=b; idx[m++]=c; idx[m++]=d;
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, grid.vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, v, gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, grid.ibo);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
+  grid.count = idx.length; grid.G = Gn;
+}
+
+var FOV = 52*Math.PI/180;
+var cam = { yaw: 0.55, pitch: -0.045, pos:[0,11,0], R:[1,0,0], U:[0,1,0], F:[0,0,-1] };
+var view = m4(), proj = m4(), vp = m4();
+var W=1, H=1, cssW=1, cssH=1, dpr=1;
+
+function updateCam() {
+  var cp = Math.cos(cam.pitch);
+  cam.F = [cp*Math.sin(cam.yaw), Math.sin(cam.pitch), cp*Math.cos(cam.yaw)];
+  var rx = -cam.F[2], rz = cam.F[0], rl = Math.hypot(rx, rz) || 1;
+  cam.R = [rx/rl, 0, rz/rl];
+  cam.U = [cam.R[1]*cam.F[2]-cam.R[2]*cam.F[1],
+           cam.R[2]*cam.F[0]-cam.R[0]*cam.F[2],
+           cam.R[0]*cam.F[1]-cam.R[1]*cam.F[0]];
+  cam.pos = [0, P.camH, 0];
+  lookAt(view, cam.pos, [cam.pos[0]+cam.F[0], cam.pos[1]+cam.F[1], cam.pos[2]+cam.F[2]]);
+  perspective(proj, FOV, cssW/cssH, 0.4, 9000);
+  mul(vp, proj, view);
+}
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cssW = canvas.clientWidth || window.innerWidth;
+  cssH = canvas.clientHeight || window.innerHeight;
+  W = Math.max(2, Math.round(cssW*dpr)); H = Math.max(2, Math.round(cssH*dpr));
+  if (canvas.width !== W) canvas.width = W;
+  if (canvas.height !== H) canvas.height = H;
+  updateCam();
+}
+function sunDir() {
+  var el = P.sunEl*Math.PI/180, az = P.sunAz*Math.PI/180;
+  return [Math.cos(el)*Math.sin(az), Math.sin(el), Math.cos(el)*Math.cos(az)];
+}
+
+function render() {
+  var sun = sunDir();
+  gl.viewport(0, 0, W, H);
+  gl.disable(gl.DEPTH_TEST); gl.depthMask(false); gl.disable(gl.CULL_FACE);
+  gl.useProgram(pSky);
+  gl.uniform2f(pSky.U("uRes"), W, H);
+  gl.uniform3f(pSky.U("uSun"), sun[0], sun[1], sun[2]);
+  gl.uniform3f(pSky.U("uCamR"), cam.R[0], cam.R[1], cam.R[2]);
+  gl.uniform3f(pSky.U("uCamU"), cam.U[0], cam.U[1], cam.U[2]);
+  gl.uniform3f(pSky.U("uCamF"), cam.F[0], cam.F[1], cam.F[2]);
+  gl.uniform1f(pSky.U("uTanHalf"), Math.tan(FOV*0.5));
+  gl.uniform1f(pSky.U("uAspect"), cssW/cssH);
+  gl.uniform1f(pSky.U("uExpo"), P.expo);
+  drawQuad(pSky);
+
+  gl.depthMask(true); gl.clear(gl.DEPTH_BUFFER_BIT); gl.enable(gl.DEPTH_TEST);
+  gl.useProgram(pOcean);
+  gl.uniformMatrix4fv(pOcean.U("uVP"), false, vp);
+  bindTex(pOcean, "uDisp", 0, R.disp);
+  bindTex(pOcean, "uGrad", 1, R.grad);
+  gl.uniform1f(pOcean.U("uPatch"), P.patch);
+  gl.uniform1f(pOcean.U("uN"), R.N);
+  gl.uniform1f(pOcean.U("uFoamThr"), P.foamThr);
+  gl.uniform1f(pOcean.U("uFoamAmt"), P.foamAmt);
+  gl.uniform1f(pOcean.U("uExpo"), P.expo);
+  gl.uniform1f(pOcean.U("uWire"), ui.wire ? 1 : 0);
+  gl.uniform3f(pOcean.U("uCam"), cam.pos[0], cam.pos[1], cam.pos[2]);
+  gl.uniform3f(pOcean.U("uSun"), sun[0], sun[1], sun[2]);
+  gl.bindBuffer(gl.ARRAY_BUFFER, grid.vbo);
+  gl.enableVertexAttribArray(pOcean.a.aXZ);
+  gl.vertexAttribPointer(pOcean.a.aXZ, 2, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, grid.ibo);
+  gl.drawElements(ui.wire ? gl.LINES : gl.TRIANGLES, grid.count, gl.UNSIGNED_INT, 0);
+}
+
+/* -------------------------------------------------------------------- UI */
+var ui = { wire: false, paused: false, dirty: true, meshG: 288 };
+var host = document.getElementById("params");
+
+function segment(label, options, current, onPick) {
+  var h2 = document.createElement("h2"); h2.textContent = label;
+  host.appendChild(h2);
+  var row = document.createElement("div"); row.className = "seg";
+  options.forEach(function (o) {
+    var b = document.createElement("button");
+    b.type = "button"; b.textContent = o.l;
+    b.setAttribute("aria-pressed", o.v === current() ? "true" : "false");
+    b.addEventListener("click", function () {
+      onPick(o.v);
+      Array.prototype.forEach.call(row.children, function (c, i) {
+        c.setAttribute("aria-pressed", options[i].v === current() ? "true" : "false");
+      });
+    });
+    row.appendChild(b);
+  });
+  host.appendChild(row);
+}
+
+function fmt(it) {
+  var v = P[it.k];
+  if (it.fmt === "exp") return Math.pow(10, v).toExponential(2);
+  var dec = it.st < 0.1 ? 2 : (it.st < 1 ? 1 : 0);
+  return v.toFixed(dec) + (it.u || "");
+}
+
+function buildUI() {
+  host.innerHTML = "";
+  segment("Resolution", [{l:"64",v:64},{l:"128",v:128},{l:"256",v:256},{l:"512",v:512}],
+    function(){ return R.N; }, function (v) { if (!allocate(v)) return; refreshReadout(); });
+  segment("Mesh detail", [{l:"192",v:192},{l:"288",v:288},{l:"384",v:384}],
+    function(){ return ui.meshG; }, function (v) { ui.meshG = v; buildGrid(v); refreshReadout(); });
+
+  SPEC.forEach(function (grp) {
+    var h2 = document.createElement("h2");
+    h2.textContent = grp.g;
+    var sp = document.createElement("span"); sp.textContent = grp.note;
+    h2.appendChild(sp); host.appendChild(h2);
+    grp.items.forEach(function (it) {
+      var d = document.createElement("div"); d.className = "p";
+      var lab = document.createElement("label"); lab.htmlFor = "s_"+it.k; lab.textContent = it.l;
+      var out = document.createElement("output"); out.id = "o_"+it.k; out.textContent = fmt(it);
+      var inp = document.createElement("input");
+      inp.type = "range"; inp.id = "s_"+it.k;
+      inp.min = it.min; inp.max = it.max; inp.step = it.st; inp.value = P[it.k];
+      inp.addEventListener("input", function () {
+        P[it.k] = parseFloat(inp.value);
+        derive();
+        out.textContent = fmt(it);
+        if (it.sim) ui.dirty = true;
+        refreshReadout();
+      });
+      d.appendChild(lab); d.appendChild(out); d.appendChild(inp);
+      host.appendChild(d);
+    });
+  });
+}
+
+var readout = document.getElementById("readout");
+var fps = 60;
+function refreshReadout() {
+  var hs = 4*Math.sqrt(Math.max(lastVariance, 0));
+  var shortest = 2*P.patch/R.N, longest = P.patch;
+  readout.innerHTML =
+    "H<sub>s</sub> <b>" + hs.toFixed(2) + " m</b> &nbsp;·&nbsp; " +
+    "waves <b>" + shortest.toFixed(1) + "–" + longest.toFixed(0) + " m</b> &nbsp;·&nbsp; " +
+    R.N + "&sup2; grid, <b>" + (2*R.stages + 2) + "</b> passes/frame &nbsp;·&nbsp; " +
+    "<b>" + Math.round(fps) + "</b> fps";
+}
+
+document.getElementById("bWire").addEventListener("click", function (e) {
+  ui.wire = !ui.wire; e.currentTarget.setAttribute("aria-pressed", ui.wire ? "true" : "false");
+});
+document.getElementById("bPause").addEventListener("click", function (e) {
+  ui.paused = !ui.paused; e.currentTarget.setAttribute("aria-pressed", ui.paused ? "true" : "false");
+});
+document.getElementById("bSeed").addEventListener("click", function () {
+  P.seed = (Math.random()*4294967295) >>> 0; ui.dirty = true;
+});
+document.getElementById("bReset").addEventListener("click", function () {
+  SPEC.forEach(function (g) { g.items.forEach(function (it) { P[it.k] = it.v; }); });
+  P.seed = 1337; derive(); buildUI(); ui.dirty = true; refreshReadout();
+});
+var rack = document.getElementById("rack"), fold = document.getElementById("bFold");
+fold.addEventListener("click", function () {
+  var closed = rack.classList.toggle("closed");
+  fold.textContent = closed ? "+" : "−";
+});
+if (window.matchMedia("(max-width: 780px)").matches) {
+  rack.classList.add("closed"); fold.textContent = "+";
+}
+
+/* ----------------------------------------------------------------- input */
+var stage = document.getElementById("stage");
+var ptrs = new Map(), drag = null;
+stage.addEventListener("pointerdown", function (e) {
+  ptrs.set(e.pointerId, {x:e.clientX, y:e.clientY});
+  if (ptrs.size === 1) drag = { yaw: cam.yaw, pitch: cam.pitch, x: e.clientX, y: e.clientY };
+  if (stage.setPointerCapture) { try { stage.setPointerCapture(e.pointerId); } catch (err) {} }
+  e.preventDefault();
+});
+stage.addEventListener("pointermove", function (e) {
+  if (!ptrs.has(e.pointerId) || !drag || ptrs.size !== 1) return;
+  ptrs.set(e.pointerId, {x:e.clientX, y:e.clientY});
+  cam.yaw = drag.yaw - (e.clientX - drag.x)*0.0032;
+  cam.pitch = Math.max(-0.85, Math.min(0.62, drag.pitch + (e.clientY - drag.y)*0.0026));
+  updateCam(); e.preventDefault();
+});
+function lift(e) { ptrs.delete(e.pointerId); if (!ptrs.size) drag = null; }
+stage.addEventListener("pointerup", lift);
+stage.addEventListener("pointercancel", lift);
+stage.addEventListener("wheel", function (e) {
+  P.camH = Math.max(1.5, Math.min(70, P.camH * (1 + Math.sign(e.deltaY)*0.08)));
+  var s = document.getElementById("s_camH");
+  if (s) { s.value = P.camH; document.getElementById("o_camH").textContent = P.camH.toFixed(1) + " m"; }
+  updateCam(); e.preventDefault();
+}, { passive: false });
+document.addEventListener("touchmove", function (e) { e.preventDefault(); }, { passive: false });
+["gesturestart","gesturechange","gestureend"].forEach(function (n) {
+  document.addEventListener(n, function (e) { e.preventDefault(); });
+});
+
+/* ------------------------------------------------------------------ loop */
+var simTime = 0, last = 0, fT = 0, fN = 0;
+function tick(now) {
+  requestAnimationFrame(tick);
+  if (!last) { last = now; return; }
+  var dt = Math.min((now - last)/1000, 0.1); last = now;
+  fT += dt; fN++;
+  if (fT > 0.5) { fps = fN/fT; fT = 0; fN = 0; refreshReadout(); }
+  if (!ui.paused) simTime += dt * P.speed;
+  if (ui.dirty) { uploadH0(); ui.dirty = false; refreshReadout(); }
+  simulate(simTime);
+  updateCam();
+  render();
+}
+
+/* A small read-only surface for verifying the GPU pipeline against a CPU
+   reference, and for poking at the simulation from the console. */
+window.oceanDebug = {
+  params: P,
+  phillips: phillips,
+  buildH0: buildH0,
+  butterflyTexture: butterflyTexture,
+  N: function () { return R.N; },
+  setParams: function (o) {
+    Object.keys(o).forEach(function (k) { if (k !== "N") P[k] = o[k]; });
+    derive();
+    if (o.N && o.N !== R.N) allocate(o.N); else uploadH0();
+    buildUI(); refreshReadout();
+  },
+  simulateAt: function (t) { simulate(t); },
+  // the packed complex FFT result, before the (-1)^(x+y) recentring
+  readFFT: function (which) {
+    var n = R.N, out = new Float32Array(n*n*4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, R.fbP);
+    gl.readBuffer(which === 1 ? gl.COLOR_ATTACHMENT1 : gl.COLOR_ATTACHMENT0);
+    gl.readPixels(0, 0, n, n, gl.RGBA, gl.FLOAT, out);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return out;
+  }
+};
+
+window.addEventListener("resize", resize);
+window.addEventListener("orientationchange", function () { setTimeout(resize, 200); });
+document.addEventListener("visibilitychange", function () { last = 0; });
+
+var startN = (Math.min(screen.width, screen.height) < 500) ? 128 : 256;
+if (allocate(startN)) {
+  buildGrid(ui.meshG);
+  buildUI();
+  resize();
+  refreshReadout();
+  requestAnimationFrame(tick);
+}
+
+})();
+</script>
+<!--CONTENT-END-->
+</body>
+</html>
