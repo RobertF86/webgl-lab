@@ -189,8 +189,10 @@ console.log('scaling and looping');
   // the dk = 2pi/L factor in h0 is what makes this hold
   ck('wave height is resolution independent', Math.abs(c-b)/b < 0.08 && Math.abs(b-a)/b < 0.15,
      `${a.toFixed(3)} / ${b.toFixed(3)} / ${c.toFixed(3)} m at N = 64/128/256`);
-  ck('default amplitude gives a plausible sea', b > 0.4 && b < 0.9,
-     `rms ${b.toFixed(2)} m, Hs ${(4*b).toFixed(1)} m at 12 m/s`);
+  // A = 8.6e-4 is the calibration point, not the app's current default: it is
+  // what pins the spectrum normalisation to a physically sensible sea.
+  ck('the calibrated amplitude gives a plausible sea', b > 0.4 && b < 0.9,
+     `A = 8.6e-4 -> rms ${b.toFixed(2)} m, Hs ${(4*b).toFixed(1)} m at 12 m/s`);
 
   const T = 100, p = P({N:32, period:T}), h0 = C.buildH0(p);
   const A = ifft2d(spectraAt(h0, p, 11).H, 32), B = ifft2d(spectraAt(h0, p, 11+T).H, 32);

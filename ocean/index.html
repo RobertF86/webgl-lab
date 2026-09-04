@@ -289,35 +289,36 @@ var SPEC = [
   { g: "Spectrum", note: "eq. 40 – 42", items: [
     { k:"windSpeed", l:"Wind speed",           min:1,   max:32,  st:0.5,  v:12,   u:" m/s", sim:1 },
     { k:"windDeg",   l:"Wind direction",       min:0,   max:360, st:1,    v:34,   u:"°",    sim:1 },
-    { k:"logA",      l:"Amplitude A",          min:-5,  max:-1.6,st:0.02, v:-3.07,u:"",     sim:1, fmt:"exp" },
-    { k:"dirPower",  l:"Directional power",    min:0.2, max:8,   st:0.1,  v:2,    u:"",     sim:1 },
+    { k:"logA",      l:"Amplitude A",          min:-5,  max:-1.6,st:0.02, v:-2.58,u:"",     sim:1, fmt:"exp" },
+    { k:"dirPower",  l:"Directional power",    min:0.2, max:8,   st:0.1,  v:3,    u:"",     sim:1 },
     { k:"against",   l:"Against-wind damping", min:0,   max:1,   st:0.01, v:0.07, u:"",     sim:1 },
     { k:"cutoff",    l:"Short-wave cutoff ℓ",  min:0,   max:2,   st:0.01, v:0.12, u:" m",   sim:1 },
     { k:"patch",     l:"Patch size L",         min:50,  max:1000,st:10,   v:200,  u:" m",   sim:1 }
   ]},
   { g: "Dispersion", note: "eq. 33 – 35", items: [
-    { k:"depth",  l:"Depth",         min:0, max:200, st:1,    v:0, u:" m" },
+    { k:"depth",  l:"Depth",         min:0, max:200, st:1,    v:33, u:" m" },
     { k:"period", l:"Loop period T",  min:0, max:600, st:10,   v:200, u:" s" },
     { k:"speed",  l:"Time scale",     min:0, max:3,   st:0.05, v:1, u:"×" }
   ]},
   { g: "Displacement", note: "eq. 44", items: [
-    { k:"choppy",  l:"Choppiness λ",   min:0,  max:2.5, st:0.05, v:1.3 },
+    { k:"choppy",  l:"Choppiness λ",   min:0,  max:2.5, st:0.05, v:2.5 },
     { k:"foamThr", l:"Foam threshold", min:-0.5, max:1.5, st:0.02, v:1.02 },
-    { k:"foamAmt", l:"Foam amount",    min:0,  max:1,   st:0.02, v:0.75 }
+    { k:"foamAmt", l:"Foam amount",    min:0,  max:1,   st:0.02, v:0.32 }
   ]},
   { g: "Grid", note: "viewport mesh", items: [
-    { k:"gridExt", l:"Grid extent",  min:300, max:6000, st:100, v:2600, u:" m", grid:1 },
+    { k:"gridExt", l:"Grid extent",  min:300, max:6000, st:100, v:3100, u:" m", grid:1 },
     { k:"gridPow", l:"Grid falloff", min:1.2, max:4.5,  st:0.1, v:2.4,  u:"",   grid:1 }
   ]},
   { g: "Surface", note: "shading", items: [
-    { k:"sunEl", l:"Sun elevation", min:-1.5, max:60,  st:0.5,  v:9,  u:"°" },
-    { k:"sunAz", l:"Sun azimuth",   min:0,    max:360, st:1,    v:44, u:"°" },
-    { k:"expo",  l:"Exposure",      min:0.3,  max:2.6, st:0.05, v:1 },
-    { k:"camH",  l:"Eye height",    min:1.5,  max:70,  st:0.5,  v:11, u:" m" }
+    { k:"sunEl", l:"Sun elevation", min:-1.5, max:60,  st:0.5,  v:17.5, u:"°" },
+    { k:"sunAz", l:"Sun azimuth",   min:0,    max:360, st:1,    v:43,   u:"°" },
+    { k:"expo",  l:"Exposure",      min:0.3,  max:2.6, st:0.05, v:1.2 },
+    { k:"camH",  l:"Eye height",    min:1.5,  max:70,  st:0.5,  v:70,   u:" m" }
   ]}
 ];
 
-var P = { N: 256, seed: 1337, windDir: 0, amplitude: 0 };
+var DEFAULTS = { N: 1024, mesh: 1024, seed: 1337 };
+var P = { N: DEFAULTS.N, seed: DEFAULTS.seed, windDir: 0, amplitude: 0 };
 SPEC.forEach(function (grp) { grp.items.forEach(function (it) { P[it.k] = it.v; }); });
 function derive() {
   P.windDir = P.windDeg * Math.PI / 180;
@@ -808,7 +809,7 @@ function render() {
 }
 
 /* -------------------------------------------------------------------- UI */
-var ui = { wire: false, paused: false, dirty: true, pendingSim: false, meshG: 288 };
+var ui = { wire: false, paused: false, dirty: true, pendingSim: false, meshG: DEFAULTS.mesh };
 var host = document.getElementById("params");
 
 function segment(label, options, current, onPick) {
@@ -912,7 +913,12 @@ document.getElementById("bSeed").addEventListener("click", function () {
 });
 document.getElementById("bReset").addEventListener("click", function () {
   SPEC.forEach(function (g) { g.items.forEach(function (it) { P[it.k] = it.v; }); });
-  P.seed = 1337; derive(); buildUI(); ui.dirty = true; refreshReadout();
+  P.seed = DEFAULTS.seed;
+  derive();
+  ui.meshG = DEFAULTS.mesh;
+  buildGrid(ui.meshG);                       // grid params were reset but never applied
+  if (R.N !== DEFAULTS.N) allocate(DEFAULTS.N); else ui.dirty = true;
+  buildUI(); refreshReadout();
 });
 var rack = document.getElementById("rack"), fold = document.getElementById("bFold");
 fold.addEventListener("click", function () {
@@ -1014,8 +1020,7 @@ window.addEventListener("resize", resize);
 window.addEventListener("orientationchange", function () { setTimeout(resize, 200); });
 document.addEventListener("visibilitychange", function () { last = 0; });
 
-var startN = (Math.min(screen.width, screen.height) < 500) ? 128 : 256;
-if (allocate(startN)) {
+if (allocate(DEFAULTS.N)) {
   buildGrid(ui.meshG);
   buildUI();
   resize();
