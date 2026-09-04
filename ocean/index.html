@@ -101,8 +101,8 @@ button{font-family:inherit;font-size:10px;font-weight:500;letter-spacing:.04em;
 button:hover{color:var(--text);background:var(--line);}
 button[aria-pressed="true"]{color:var(--bg);background:var(--accent);border-color:var(--accent);}
 button:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
-.seg{display:flex;gap:3px;margin:0 0 8px;}
-.seg button{flex:1 1 0;}
+.seg{display:flex;flex-wrap:wrap;gap:3px;margin:0 0 8px;}
+.seg button{flex:1 1 auto;min-width:40px;padding:6px 6px;}
 
 #fallback{position:fixed;inset:0;z-index:9;display:none;place-content:center;padding:32px;
   text-align:center;background:var(--bg);}
@@ -420,15 +420,35 @@ void main(){
 var FS_PERMUTE = `#version 300 es
 precision highp float;
 uniform sampler2D uA, uB;
-uniform float uChoppy;
+uniform float uChoppy, uN, uPatch;
 layout(location=0) out vec4 oDisp;
 layout(location=1) out vec4 oGrad;
+
+float sgn(ivec2 q){ return (((q.x + q.y) & 1) == 1) ? -1.0 : 1.0; }
+vec2 dispAt(ivec2 q){                       // horizontal displacement at a texel
+  vec4 a = texelFetch(uA, q, 0) * sgn(q);
+  return vec2(a.y, a.z) * uChoppy;
+}
 void main(){
   ivec2 px = ivec2(gl_FragCoord.xy);
-  float s = (((px.x + px.y) & 1) == 1) ? -1.0 : 1.0;
+  int N = int(uN);
+  float s = sgn(px);
   vec4 A = texelFetch(uA, px, 0) * s;
   vec4 B = texelFetch(uB, px, 0) * s;
-  oDisp = vec4(A.y * uChoppy, A.x, A.z * uChoppy, 0.0);   // Dx, h, Dz
+
+  // Jacobian of the horizontal displacement, wrapped at the patch edge. Below
+  // 1 the surface is compressing; below 0 it has folded over itself, which is
+  // where a real sea throws foam.
+  vec2 xp = dispAt(ivec2((px.x + 1) % N, px.y));
+  vec2 xm = dispAt(ivec2((px.x - 1 + N) % N, px.y));
+  vec2 zp = dispAt(ivec2(px.x, (px.y + 1) % N));
+  vec2 zm = dispAt(ivec2(px.x, (px.y - 1 + N) % N));
+  float ds = 2.0 * uPatch / uN;
+  float axx = (xp.x - xm.x)/ds, azx = (xp.y - xm.y)/ds;
+  float axz = (zp.x - zm.x)/ds, azz = (zp.y - zm.y)/ds;
+  float J = (1.0 + axx)*(1.0 + azz) - axz*azx;
+
+  oDisp = vec4(A.y * uChoppy, A.x, A.z * uChoppy, J);     // Dx, h, Dz, J
   oGrad = vec4(A.w, B.x, 0.0, 0.0);                       // dh/dx, dh/dz
 }`;
 
@@ -469,27 +489,19 @@ var VS_OCEAN = `#version 300 es
 in vec2 aXZ;
 uniform mat4 uVP;
 uniform sampler2D uDisp;
-uniform float uPatch, uN, uFoamThr;
+uniform float uPatch, uFoamThr;
 uniform vec3 uCam;
 out vec3 vW; out vec2 vUV; out float vFoam; out float vDist; out float vFade;
 void main(){
   vec2 uv = aXZ / uPatch;
-  vec3 d = texture(uDisp, uv).xyz;
+  vec4 d = texture(uDisp, uv);          // Dx, h, Dz, Jacobian
   // Past a few hundred metres the grid can no longer resolve a wave, so the
   // displacement is faded out rather than left to alias into noise.
   float dist = length(aXZ - uCam.xz);
   float fade = 1.0 - smoothstep(320.0, 1500.0, dist);
   vec3 w = vec3(aXZ.x + d.x*fade, d.y*fade, aXZ.y + d.z*fade);
 
-  // Jacobian of the horizontal displacement. Where it drops below 1 the
-  // surface is folding onto itself - that is where a real sea throws foam.
-  float t = 1.0/uN, ds = 2.0*uPatch/uN;
-  vec3 xp = texture(uDisp, uv + vec2(t,0.0)).xyz, xm = texture(uDisp, uv - vec2(t,0.0)).xyz;
-  vec3 zp = texture(uDisp, uv + vec2(0.0,t)).xyz, zm = texture(uDisp, uv - vec2(0.0,t)).xyz;
-  float axx = (xp.x-xm.x)/ds, azx = (xp.z-xm.z)/ds;
-  float axz = (zp.x-zm.x)/ds, azz = (zp.z-zm.z)/ds;
-  float J = (1.0+axx)*(1.0+azz) - axz*azx;
-  vFoam = clamp(uFoamThr - J, 0.0, 1.0) * fade;
+  vFoam = clamp(uFoamThr - d.w, 0.0, 1.0) * fade;
 
   vW = w; vUV = uv; vDist = dist; vFade = fade;
   gl_Position = uVP * vec4(w, 1.0);
@@ -631,6 +643,8 @@ function simulate(time) {
   bindTex(pPerm, "uA", 0, srcIsP ? R.pA : R.qA);
   bindTex(pPerm, "uB", 1, srcIsP ? R.pB : R.qB);
   gl.uniform1f(pPerm.U("uChoppy"), P.choppy);
+  gl.uniform1f(pPerm.U("uN"), R.N);
+  gl.uniform1f(pPerm.U("uPatch"), P.patch);
   drawQuad(pPerm);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 }
@@ -737,7 +751,6 @@ function render() {
   bindTex(pOcean, "uDisp", 0, R.disp);
   bindTex(pOcean, "uGrad", 1, R.grad);
   gl.uniform1f(pOcean.U("uPatch"), P.patch);
-  gl.uniform1f(pOcean.U("uN"), R.N);
   gl.uniform1f(pOcean.U("uFoamThr"), P.foamThr);
   gl.uniform1f(pOcean.U("uFoamAmt"), P.foamAmt);
   gl.uniform1f(pOcean.U("uExpo"), P.expo);
@@ -785,7 +798,8 @@ function buildUI() {
   host.innerHTML = "";
   segment("Resolution", [{l:"64",v:64},{l:"128",v:128},{l:"256",v:256},{l:"512",v:512}],
     function(){ return R.N; }, function (v) { if (!allocate(v)) return; refreshReadout(); });
-  segment("Mesh detail", [{l:"192",v:192},{l:"288",v:288},{l:"384",v:384}],
+  segment("Mesh detail", [{l:"192",v:192},{l:"288",v:288},{l:"384",v:384},
+                          {l:"512",v:512},{l:"768",v:768},{l:"1024",v:1024}],
     function(){ return ui.meshG; }, function (v) { ui.meshG = v; buildGrid(v); refreshReadout(); });
 
   SPEC.forEach(function (grp) {
@@ -817,12 +831,14 @@ var readout = document.getElementById("readout");
 var fps = 60;
 function refreshReadout() {
   var hs = 4*Math.sqrt(Math.max(lastVariance, 0));
+  var nt = grid.count/3;
+  var tris = nt >= 1e6 ? (nt/1e6).toFixed(2) + "M" : Math.round(nt/1000) + "k";
   var shortest = 2*P.patch/R.N, longest = P.patch;
   readout.innerHTML =
     "H<sub>s</sub> <b>" + hs.toFixed(2) + " m</b> &nbsp;·&nbsp; " +
     "waves <b>" + shortest.toFixed(1) + "–" + longest.toFixed(0) + " m</b> &nbsp;·&nbsp; " +
     R.N + "&sup2; grid, <b>" + (2*R.stages + 2) + "</b> passes/frame &nbsp;·&nbsp; " +
-    "<b>" + Math.round(fps) + "</b> fps";
+    "<b>" + tris + "</b> tris &nbsp;·&nbsp; <b>" + Math.round(fps) + "</b> fps";
 }
 
 document.getElementById("bWire").addEventListener("click", function (e) {

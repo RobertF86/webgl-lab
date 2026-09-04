@@ -31,9 +31,37 @@ grid resolution *N*, seed.
 **Displacement** (eq. 44) — choppiness *λ*, foam threshold, foam amount.
 **Surface** — sun elevation and azimuth, exposure, eye height.
 
+Grid resolution *N* runs 64–512; mesh detail runs 192–1024, which is 74k to
+**2.10M triangles**. The two are independent: *N* sets how much wave detail
+exists, mesh detail sets how finely the grid samples it.
+
 Drag to look around, wheel to change eye height. `window.oceanDebug` exposes the
 spectrum functions and a float readback of the FFT result, which is what the
 verification below uses.
+
+## Does more mesh density pay off?
+
+Yes, and with clean geometric convergence. Freezing time and changing only the
+mesh, the mean per-pixel change is:
+
+| step | mean &#124;Δ&#124; (of 255) |
+| --- | --- |
+| 288 → 512 | 1.43 |
+| 512 → 1024 | 0.68 |
+
+It halves per doubling, and it is the *same* at N=256/L=200 m (0.78 m texels),
+N=512/L=200 m (0.39 m) and N=256/L=80 m (0.31 m) — so the grid, not the
+displacement texture, is what those vertices are resolving. Nothing is wasted,
+but the returns halve each step, so 512 is the sweet spot on most hardware and
+1024 is there for a still frame.
+
+The Jacobian that drives foam is computed **in the permute pass, not per
+vertex**. It varies per texel, so at a 1024² grid computing it per vertex meant
+five texture fetches for 1.05M vertices — 5M fetches a frame for a quantity with
+only N² distinct values. Moving it into the permute pass cut the vertex shader
+to one fetch and made the foam slightly sharper as a side effect, because it now
+uses exact texel neighbours with wrapping rather than interpolated samples at
+arbitrary grid positions.
 
 ## Three details that matter
 
@@ -84,8 +112,12 @@ about as oceanography says it should:
 
 - **One cascade.** Near-field detail is limited by the patch texel size —
   at L = 200 m and N = 256 that is 0.8 m, so water close to the eye is soft.
-  Production systems run several FFTs at different patch sizes and sum them;
-  that is the obvious next step. Lowering *L* trades long waves for near detail.
+  Mesh detail cannot fix this; only a smaller *L*, a larger *N*, or several
+  FFTs at different patch sizes summed together, which is what production
+  systems do and is the obvious next step.
+- **The grid extends to 2600 m** with a `|u|^2.4` warp toward the viewer. About
+  a third of its vertices land beyond the 1500 m displacement fade, where the
+  water is flat — the price of reaching the horizon with one draw.
 - **Foam is a Jacobian threshold, not simulated.** `J < 1` marks where the
   horizontal displacement is compressing the surface. It has no advection,
   persistence or decay, so foam appears and vanishes with the wave rather than
