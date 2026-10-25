@@ -14,11 +14,11 @@ Any of these work:
 
 - **Serve it locally** and open the LAN address on the phone (same Wi-Fi):
   ```
-  cd rnd/webgl-ball-in-box && python3 -m http.server 8000
+  cd ball-in-box && python3 -m http.server 8000
   ```
   then browse to `http://<your-computer-ip>:8000` on the iPhone.
 - **GitHub Pages** — enable Pages for the repo and open
-  `/rnd/webgl-ball-in-box/`.
+  `/ball-in-box/`.
 - **Open the file directly** — it runs fine from `file://` too; only the web
   font fails to load, and the fallback stack covers that.
 
