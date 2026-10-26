@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>ISS Tracker</title>
+<link rel="stylesheet" href="../fonts/fonts.css">
+<link rel="stylesheet" href="style.css?v=5">
+</head>
+<body>
+
+<canvas id="c" aria-label="The International Space Station on its current orbit around the Earth, with the real sky behind it"></canvas>
+<svg id="linien" aria-hidden="true"></svg>
+<div id="labels"></div>
+
+<div class="plate">
+  <h1>ISS Tracker</h1>
+  <p class="zeile" id="tLive">live</p>
+  <p class="zeile bahn" id="tBahn">&nbsp;</p>
+  <p class="zeile warnung" id="tWarnung" aria-live="polite" hidden></p>
+  <p class="quelle">textures courtesy NASA Earth Observatory</p>
+</div>
+
+<aside class="rack" id="rack">
+  <header>
+    <span class="t">Controls</span>
+    <button id="bRack" type="button" aria-expanded="true" aria-controls="rackInhalt" title="Collapse">&minus;</button>
+  </header>
+  <div class="inhalt" id="rackInhalt">
+    <section>
+      <h2>Camera</h2>
+      <div class="seg">
+        <button id="kErde" type="button" aria-pressed="true">Earth</button>
+        <button id="kFolgen" type="button" aria-pressed="false">Follow ISS</button>
+        <button id="kBlick" type="button" aria-pressed="false">Look</button>
+      </div>
+      <div class="seg">
+        <button id="kErdfest" type="button" aria-pressed="true">Earth-fixed</button>
+        <button id="kRaumfest" type="button" aria-pressed="false">Inertial</button>
+      </div>
+      <div class="seg">
+        <button id="bZurueck" type="button">Back to Earth</button>
+      </div>
+    </section>
+    <section>
+      <h2>Display</h2>
+      <label class="schalter"><input type="checkbox" id="sWolken" checked> Clouds</label>
+      <label class="schalter"><input type="checkbox" id="sAtmo" checked> Atmosphere</label>
+      <label class="schalter"><input type="checkbox" id="sNacht" checked> City lights</label>
+      <label class="schalter"><input type="checkbox" id="sBahn" checked> Orbit</label>
+      <label class="schalter"><input type="checkbox" id="sBoden" checked> Ground track</label>
+      <label class="schalter"><input type="checkbox" id="sKreis" checked> Visibility circle</label>
+      <label class="schalter"><input type="checkbox" id="sLabels" checked> Labels</label>
+      <div class="p">
+        <label for="sMag">Stars to magnitude</label><output id="oMag" for="sMag">6.5</output>
+        <input id="sMag" type="range" min="3" max="6.5" step="0.5" value="6.5">
+      </div>
+    </section>
+    <section>
+      <h2>Info</h2>
+      <dl class="info">
+        <dt>Epoch</dt><dd id="iEpoche">&ndash;</dd>
+        <dt>Period</dt><dd id="iUmlauf">&ndash;</dd>
+        <dt>Inclination</dt><dd id="iNeigung">&ndash;</dd>
+      </dl>
+    </section>
+  </div>
+</aside>
+
+<div class="zeit">
+  <div class="knoepfe">
+    <button id="bLive" type="button" aria-pressed="true">Live</button>
+    <button id="bPause" type="button" aria-pressed="false">Pause</button>
+    <button id="b10" type="button" aria-pressed="false">&times;10</button>
+    <button id="b100" type="button" aria-pressed="false">&times;100</button>
+    <button id="bJetzt" type="button">Now</button>
+    <button id="bKlang" type="button" class="klang" aria-pressed="false" aria-label="Sound" title="Sound on/off">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <defs><mask id="klangSchnitt" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+          <rect width="24" height="24" fill="#fff"/><path d="M3.5 3.5l17 17" stroke="#000" stroke-width="4.6"/>
+        </mask></defs>
+        <path class="box box-an" d="M3 9h4l5-4.5v15L7 15H3z"/>
+        <path class="box box-aus" d="M3 9h4l5-4.5v15L7 15H3z" mask="url(#klangSchnitt)"/>
+        <path class="wellen" d="M15.5 8.8a4.5 4.5 0 0 1 0 6.4M18.4 6a8.4 8.4 0 0 1 0 12"/>
+        <path class="strich" d="M3.5 3.5l17 17"/>
+      </svg>
+    </button>
+  </div>
+  <div class="uhr">
+    <span id="tUtc">&ndash;</span>
+    <span id="tLokal">&ndash;</span>
+  </div>
+</div>
+
+<noscript><p class="hinweis">This demo needs JavaScript.</p></noscript>
+<div id="fehler" class="hinweis" role="alert" hidden></div>
+
+<!-- Reihenfolge: himmel.js vor erde/spur/iss (sie stellen Himmelszeichner.WGSL_AUSGABE
+     ihren Shadern voran), kacheln.js vor erde.js, gpu.js vor allem Zeichnenden.
+     ?v=4 (Task 12c): Shader/Puffer geaendert, alte Caches ergaeben Validierungsfehler.
+     ?v=5 (Task 17) nur an den geaenderten Dateien: klang.js (neu), tracker.js, style.css.
+     ?v=6 (Task 19) nur an den geaenderten Dateien: zeit.js, kamera.js, erde.js, labels.js,
+     klang.js, tracker.js (tracker.js ruft Uhr.anhalten/fortsetzen aus zeit.js).
+     ?v=7 (Nachtrag Task 17, Musik an per Voreinstellung): klang.js, tracker.js. -->
+<script src="bahn.js?v=5"></script>
+<script src="zeit.js?v=6"></script>
+<script src="sgp4.js?v=4"></script>
+<script src="himmelsmechanik.js?v=4"></script>
+<script src="sterne.js?v=4"></script>
+<script src="gpu.js?v=4"></script>
+<script src="kamera.js?v=6"></script>
+<script src="himmel.js?v=4"></script>
+<script src="kacheln.js?v=4"></script>
+<script src="erde.js?v=6"></script>
+<script src="spur.js?v=4"></script>
+<script src="iss-modell.js?v=4"></script>
+<script src="iss.js?v=4"></script>
+<script src="labels.js?v=6"></script>
+<script src="klang.js?v=7"></script>
+<script src="tracker.js?v=7"></script>
+</body>
+</html>

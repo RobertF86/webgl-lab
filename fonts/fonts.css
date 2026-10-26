@@ -1,0 +1,20 @@
+/* Selbst gehostete Schriften fuer die WebGL-Demos - ersetzt fonts.googleapis.com
+   (kein Abruf bei Google, DSGVO). Alle sechs Familien stehen unter der SIL Open Font License.
+   Nur das Latin-Subset: die Demos sind englisch. Eingebunden je Demo per ../fonts/fonts.css */
+@font-face{font-family:'Archivo';font-style:normal;font-weight:500;font-display:swap;src:url(Archivo-500.woff2) format('woff2');}
+@font-face{font-family:'Archivo';font-style:normal;font-weight:600;font-display:swap;src:url(Archivo-600.woff2) format('woff2');}
+@font-face{font-family:'Archivo';font-style:normal;font-weight:700;font-display:swap;src:url(Archivo-700.woff2) format('woff2');}
+@font-face{font-family:'Barlow Semi Condensed';font-style:normal;font-weight:400;font-display:swap;src:url(BarlowSemiCondensed-400.woff2) format('woff2');}
+@font-face{font-family:'Barlow Semi Condensed';font-style:normal;font-weight:500;font-display:swap;src:url(BarlowSemiCondensed-500.woff2) format('woff2');}
+@font-face{font-family:'Barlow Semi Condensed';font-style:normal;font-weight:600;font-display:swap;src:url(BarlowSemiCondensed-600.woff2) format('woff2');}
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:400;font-display:swap;src:url(IBMPlexMono-400.woff2) format('woff2');}
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:500;font-display:swap;src:url(IBMPlexMono-500.woff2) format('woff2');}
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:400;font-display:swap;src:url(IBMPlexSans-400.woff2) format('woff2');}
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:500;font-display:swap;src:url(IBMPlexSans-500.woff2) format('woff2');}
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:600;font-display:swap;src:url(IBMPlexSans-600.woff2) format('woff2');}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400;font-display:swap;src:url(JetBrainsMono-400.woff2) format('woff2');}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:500;font-display:swap;src:url(JetBrainsMono-500.woff2) format('woff2');}
+@font-face{font-family:'Spectral';font-style:italic;font-weight:400;font-display:swap;src:url(Spectral-400i.woff2) format('woff2');}
+@font-face{font-family:'Spectral';font-style:normal;font-weight:400;font-display:swap;src:url(Spectral-400.woff2) format('woff2');}
+@font-face{font-family:'Spectral';font-style:normal;font-weight:500;font-display:swap;src:url(Spectral-500.woff2) format('woff2');}
+@font-face{font-family:'Spectral';font-style:normal;font-weight:600;font-display:swap;src:url(Spectral-600.woff2) format('woff2');}

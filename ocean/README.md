@@ -1,8 +1,10 @@
 # Phillips Spectrum Ocean
 
 Jerry Tessendorf's *Simulating Ocean Water* implemented on the GPU, with the
-parameters of each stage exposed. Single self-contained `index.html` — WebGL2,
-no libraries, no build step.
+parameters of each stage exposed. No libraries, no build step. `index.html`
+runs the simulation in WebGPU compute shaders; `webgl.html` is the WebGL2
+version the demo started as, loaded automatically when WebGPU is not available. Both are
+single files; the fonts come from `../fonts/`.
 
 ## What runs each frame
 
@@ -18,9 +20,15 @@ At N = 256 that is **18 passes a frame**.
 Five real fields are needed — height, two displacement components, two slope
 components. A complex inverse transform of a Hermitian spectrum yields a *real*
 field, so two fields ride in one transform (one in the real part, one in the
-imaginary) and three complex transforms carry all five. They are packed
-two-per-RGBA-texture and pushed through the same butterfly passes with multiple
-render targets.
+imaginary) and three complex transforms carry all five.
+
+In `index.html` spectrum, FFT and permute are compute dispatches. Storage buffer
+A carries two of the transforms (`vec4`: h + iDx, Dz + iSx, with D for
+displacement and S for slope), buffer B the third (`vec2`: Sz); the butterfly
+passes ping-pong between two such buffer sets, and the permute pass writes two
+`rgba16float` storage textures that the grid samples filtered. In `webgl.html`
+the fields are packed two-per-RGBA-texture and pushed through the same
+butterfly passes with multiple render targets.
 
 ## Parameters
 
@@ -39,12 +47,13 @@ you.
 
 Drag to look around, wheel to change eye height. `window.oceanDebug` exposes the
 spectrum functions and a float readback of the FFT result, which is what the
-verification below uses.
+verification below uses. In `index.html` the readback goes through staging
+buffers and `mapAsync`, so `rmsSlope`, `readFFT` and `check` return promises.
 
 ## Where the detail actually comes from
 
 Three independent ceilings, and it is worth knowing which one is binding —
-the readout names it:
+the readout shows the first two and marks whichever of them binds:
 
 | ceiling | set by |
 | --- | --- |
@@ -90,13 +99,15 @@ distinct values.
 
 ## Pushing it until it breaks
 
-N = 2048 runs: 24 passes, **448 MB** of float textures, and a ~2.8 s freeze
-while h0 is built on the CPU. All three numbers are in the readout, and h0
-rebuilds wait for slider release once they cost more than 25 ms. If an
-allocation fails the previous resolution is kept and the readout says so, rather
-than the page dying.
+N = 2048 runs: 24 passes, **448 MB** of float textures in `webgl.html`, and a
+~2.8 s freeze while h0 is built on the CPU. All three numbers are in the
+readout, and h0 rebuilds wait for slider release once they cost more than
+25 ms. `index.html` holds the same data in storage buffers and two
+`rgba16float` maps; its readout counts about 320 MB at N = 2048. If an
+allocation fails — or, in WebGPU, would exceed the device's buffer limits — the
+previous resolution is kept and the readout says so, rather than the page dying.
 
-## Three details that matter## Three details that matter
+## Three details that matter
 
 **The conjugate term must be the mirrored `h₀(−k)`, not a fresh random draw.**
 Drawing it independently is a common shortcut, but it breaks the Hermitian
@@ -121,18 +132,22 @@ N = 64 / 128 / 256 — flat, as it should be.
 node tests/ocean.test.js
 ```
 
-22 assertions, run against the core extracted straight out of `index.html`
-between the `<ocean-core>` markers so there is one copy of the code: the *k*⁻⁴
-falloff, directional and against-wind behaviour, the cutoff, the deep and
-finite-depth dispersion relations, quantised ω, realness of all three fields,
-spectral slope against finite differences, resolution independence, and exact
-looping over the period.
+24 checks, run against the core extracted straight out of `index.html`
+between the `<ocean-core>` markers (`webgl.html` carries an identical copy;
+change both together): the *k*⁻⁴ falloff, directional and against-wind
+behaviour, the cutoff, the deep and finite-depth dispersion relations,
+quantised ω, realness of all three fields, spectral slope against finite
+differences, resolution independence, and exact looping over the period.
 
 The **GPU pipeline was checked against the CPU reference** by reading the float
 FFT result back with `readPixels` and comparing it to a plain JS inverse
 transform of the same `h₀`: agreement to a relative rms of **1.1×10⁻⁴**, which
-is float32 precision. Physically, wind speed maps to significant wave height
-about as oceanography says it should:
+is float32 precision (measured on the WebGL version). `index.html` has the same
+comparison as `oceanDebug.check()`, against a double-precision CPU run of the
+same spectrum, butterfly and permute chain.
+
+Physically, wind speed maps to significant wave height about as oceanography
+says it should:
 
 | wind | H<sub>s</sub> |
 | --- | --- |
@@ -148,11 +163,12 @@ about as oceanography says it should:
   Mesh detail cannot fix this; only a smaller *L*, a larger *N*, or several
   FFTs at different patch sizes summed together, which is what production
   systems do and is the obvious next step.
-- **The grid warp is a compromise.** At the default extent of 2600 m about a
-  third of the vertices land beyond the 1500 m displacement fade, where the
+- **The grid warp is a compromise.** At the default extent of 3100 m about
+  half of the vertices land beyond the 1500 m displacement fade, where the
   water is flat — the price of reaching the horizon in one draw. Both extent
   and falloff are exposed so you can spend them differently.
-- **Displacement and slope maps are RGBA32F** where the driver can filter them,
+- **Displacement and slope maps are half-float in WebGPU** (`rgba16float`
+  storage textures). `webgl.html` uses RGBA32F where the driver can filter it,
   falling back to 16F. Half-float throws away short-wave detail, which is small
   next to the swell it rides on.
 - **Foam is a Jacobian threshold, not simulated.** `J < 1` marks where the

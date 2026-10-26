@@ -1,16 +1,7 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#080D12">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="description" content="Tessendorf's Simulating Ocean Water implemented on the GPU, with the Phillips spectrum, dispersion, choppiness and foam parameters exposed.">
-<!--CONTENT-START-->
-<title>Phillips Spectrum Ocean</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap">
+<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8">
+<title>Phillips Spectrum Ocean</title><meta name=viewport content="width=device-width,initial-scale=1"></head><body>
+
+<link rel="stylesheet" href="../fonts/fonts.css">
 <style>
 :root{
   --bg:#080D12; --panel:rgba(13,19,25,.90); --panel-solid:#0D1319;
@@ -139,10 +130,22 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
   .plate .cite{ font-size:10.5px; line-height:1.38; }
   .plate .read{ margin-top:5px; font-size:9.5px; }
 }
+
+/* ---- Kompaktstufe: Handy und Einbettung im Rahmen. Nur kleine Fenster,
+   der Desktop bleibt wie er ist. ---- */
+@media (max-width: 640px), (max-height: 460px){
+  .plate{ padding:6px 9px 6px; max-width:calc(100vw - 16px); }
+  .plate h1{ font-size:12px; margin:0; }
+  .plate .cite, .plate .read{ display:none; }
+  .rack{ max-height:min(46vh, 300px); }
+  .rack header{ padding:5px 8px; }
+  .rack header .t{ font-size:11px; }
+  .rack header button, .rack .foot button{ font-size:10px; min-height:28px; padding:4px 8px; }
+  .rack .body{ padding:4px 9px 8px; }
+  .rack .foot{ padding:5px 8px; }
+}
 @media (prefers-reduced-motion: reduce){ *{transition-duration:.01ms !important;} }
 </style>
-</head>
-<body>
 <div id="stage"><canvas id="gl" aria-label="Animated ocean surface simulation"></canvas></div>
 
 <div class="plate">
@@ -168,9 +171,9 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
 </div>
 
 <div id="fallback"><div>
-  <strong>WebGL2 with float render targets is required</strong>
-  <p id="fallbackMsg">This page runs the FFT on the GPU, which needs WebGL2 and the
-  EXT_color_buffer_float extension. Safari 15+, Chrome and Firefox all support it.</p>
+  <strong>WebGPU is required</strong>
+  <p id="fallbackMsg">This page runs the FFT in WebGPU compute shaders. Browsers without
+  WebGPU are sent to the WebGL version automatically.</p>
 </div></div>
 
 <script>
@@ -180,18 +183,18 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
 /* =========================================================================
    Simulating Ocean Water  -  Tessendorf, SIGGRAPH course notes
 
-   Pipeline, once per frame:
-     1  spectrum pass   h(k,t) = h0(k) e^{iwt} + conj(h0(-k)) e^{-iwt}     (eq 43)
-                        plus the displacement and slope spectra            (eq 44)
-     2  FFT passes      2*log2(N) butterfly passes, horizontal then vertical
-     3  permute pass    the (-1)^(x+y) recentring, into displacement + slope maps
-     4  render          a warped grid displaced in the vertex shader
+   Ablauf je Frame (WebGPU-Fassung, alles als Compute-Dispatches):
+     1  spectrum   h(k,t) = h0(k) e^{iwt} + conj(h0(-k)) e^{-iwt}          (Gl. 43)
+                   plus Verschiebungs- und Steigungsspektren                 (Gl. 44)
+     2  FFT        2*log2(N) Butterfly-Stufen, erst waagerecht, dann senkrecht
+     3  permute    die (-1)^(x+y)-Umsortierung in Verschiebungs- und Steigungskarte
+     4  render     ein zum Betrachter verdichtetes Gitter, im Vertex-Shader verschoben
 
-   Five real fields are needed (h, Dx, Dz, dh/dx, dh/dz). A complex inverse
-   transform of a Hermitian spectrum yields a real field, so two fields ride in
-   one transform - one in the real part, one in the imaginary - and three
-   complex transforms carry all five. They are packed two-per-RGBA-texture and
-   run through the same butterfly passes via multiple render targets.
+   Fuenf reelle Felder (h, Dx, Dz, dh/dx, dh/dz) reisen in drei komplexen
+   Transformationen: Storage-Puffer A traegt zwei (vec4 = h+iDx, Dz+iSx),
+   Storage-Puffer B eine (vec2 = Sz). Die Butterfly-Stufen laufen per
+   Ping-Pong zwischen zwei Puffersaetzen P und Q; die Umsortierung schreibt
+   zwei rgba16float-Storage-Texturen, die das Gitter gefiltert abtastet.
    ========================================================================= */
 
 /* <ocean-core> shared with tests/ocean.test.js; do not rename these markers */
@@ -326,297 +329,466 @@ function derive() {
 }
 derive();
 
-/* ------------------------------------------------------------ gl context */
+/* ------------------------------------------------------ WebGPU-Start, Rueckfall */
 var canvas = document.getElementById("gl");
-var gl = canvas.getContext("webgl2", { antialias: true, alpha: false, depth: true });
-function bail(msg) {
-  if (msg) document.getElementById("fallbackMsg").textContent = msg;
+function zeigeHinweis(text) {                      // nur fuer Geraeteverlust zur Laufzeit
+  document.getElementById("fallbackMsg").textContent = text;
   document.getElementById("fallback").classList.add("show");
 }
-if (!gl) { bail(); return; }
-var extCBF = gl.getExtension("EXT_color_buffer_float");
-if (!extCBF) { bail("WebGL2 is available but EXT_color_buffer_float is not, so the FFT cannot render into float textures."); return; }
-gl.getExtension("OES_texture_float_linear");
-
-function sh(t, src, tag) {
-  var s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s);
-  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(tag + ": " + gl.getShaderInfoLog(s));
-  return s;
+function rueckfall(grund) {
+	console.error("WebGPU unavailable (" + grund + "), switching to the WebGL version");
+	location.replace("webgl.html#fallback=" + encodeURIComponent(grund));
 }
-function prog(vs, fs, tag) {
-  var p = gl.createProgram();
-  gl.attachShader(p, sh(gl.VERTEX_SHADER, vs, tag + " vs"));
-  gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs, tag + " fs"));
-  gl.linkProgram(p);
-  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(tag + " link: " + gl.getProgramInfoLog(p));
-  p.u = {}; p.a = {};
-  var n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS), i, d;
-  for (i = 0; i < n; i++) { d = gl.getActiveUniform(p, i); p.u[d.name] = gl.getUniformLocation(p, d.name); }
-  n = gl.getProgramParameter(p, gl.ACTIVE_ATTRIBUTES);
-  for (i = 0; i < n; i++) { d = gl.getActiveAttrib(p, i); p.a[d.name] = gl.getAttribLocation(p, d.name); }
-  p.U = function (k) { return p.u[k] === undefined ? null : p.u[k]; };
-  return p;
-}
-function tex(w, h, internal, format, type, filter, wrap, data) {
-  var t = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, t);
-  gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, format, type, data || null);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrap);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrap);
-  return t;
-}
-function fbo(list) {
-  var f = gl.createFramebuffer();
-  gl.bindFramebuffer(gl.FRAMEBUFFER, f);
-  var att = [];
-  for (var i = 0; i < list.length; i++) {
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, list[i], 0);
-    att.push(gl.COLOR_ATTACHMENT0 + i);
-  }
-  gl.drawBuffers(att);
-  var ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  return ok ? f : null;
+async function starteWebGPU(canvas) {
+	if (!navigator.gpu) return rueckfall(window.isSecureContext ? "no navigator.gpu" : "insecure context, WebGPU needs https or localhost");
+	var adapter = await navigator.gpu.requestAdapter();
+	if (!adapter) return rueckfall("no adapter");
+	var device = await adapter.requestDevice();
+	device.addEventListener("uncapturederror", function (e) { console.error("WebGPU:", e.error.message); });
+	device.lost.then(function (info) { if (info.reason !== "destroyed") zeigeHinweis("GPU device lost: " + info.message); });
+	var context = canvas.getContext("webgpu");
+	var format = navigator.gpu.getPreferredCanvasFormat();
+	context.configure({ device: device, format: format, alphaMode: "opaque" });
+	return { adapter: adapter, device: device, context: context, format: format };
 }
 
-/* ---------------------------------------------------------------- shaders */
-var VS_QUAD = `#version 300 es
-in vec2 aPos;
-void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }`;
+/* ------------------------------------------------------------------ WGSL */
+var CMUL = `fn cmul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> { return vec2<f32>(a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x); }`;
 
-var CMUL = `vec2 cmul(vec2 a, vec2 b){ return vec2(a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x); }`;
-
-// eq. 43 and 44: evolve h0 to time t, then form the displacement and slope
-// spectra and pack them two-per-transform
-var FS_SPEC = `#version 300 es
-precision highp float;
-uniform sampler2D uH0;
-uniform float uN, uPatch, uTime, uDepth, uPeriod;
-layout(location=0) out vec4 oA;
-layout(location=1) out vec4 oB;
+// Gl. 43 und 44: h0 auf die Zeit t entwickeln, dann Verschiebungs- und
+// Steigungsspektren bilden und je zwei in eine Transformation packen.
+// Ein Texel (x, y) liegt im Puffer bei y*N + x.
+var CS_SPEC = `
+struct SpecU {                      // Byte-Offsets
+  N: u32,                           //  0
+  patchL: f32,                      //  4
+  time: f32,                        //  8
+  depth: f32,                       // 12
+  period: f32,                      // 16
+  pad0: f32, pad1: f32, pad2: f32,  // 20..31  -> 32 Byte
+};
+@group(0) @binding(0) var<uniform> U: SpecU;
+@group(0) @binding(1) var<storage, read> h0: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> outA: array<vec4<f32>>;
+@group(0) @binding(3) var<storage, read_write> outB: array<vec2<f32>>;
 ` + CMUL + `
-void main(){
-  ivec2 px = ivec2(gl_FragCoord.xy);
-  vec2 k = 6.28318530718 * (vec2(px) - uN*0.5) / uPatch;
-  float kl = length(k);
-  vec4 h0 = texelFetch(uH0, px, 0);
-  float w = (uDepth > 0.0) ? sqrt(9.81*kl*tanh(min(kl*uDepth, 20.0)))
-                           : sqrt(9.81*kl);
-  if (uPeriod > 0.0){ float w0 = 6.28318530718/uPeriod; w = floor(w/w0)*w0; }
-  float ph = w * uTime;
-  vec2 ep = vec2(cos(ph), sin(ph));
-  vec2 h = cmul(h0.xy, ep) + cmul(h0.zw, vec2(ep.x, -ep.y));
-  vec2 kn = kl > 1e-8 ? k/kl : vec2(0.0);
-  vec2 Dx = vec2(-h.y,  h.x) * kn.x;     // +i k_hat h  (see note above)
-  vec2 Dz = vec2(-h.y,  h.x) * kn.y;
-  vec2 Sx = vec2(-h.y,  h.x) * k.x;      //  i k h
-  vec2 Sz = vec2(-h.y,  h.x) * k.y;
-  oA = vec4(h.x - Dx.y, h.y + Dx.x,      // h + i Dx
-            Dz.x - Sx.y, Dz.y + Sx.x);   // Dz + i Sx
-  oB = vec4(Sz, 0.0, 0.0);
+@compute @workgroup_size(16, 16, 1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let N = U.N;
+  if (gid.x >= N || gid.y >= N) { return; }
+  let q = gid.y*N + gid.x;
+  let k = 6.28318530718 * (vec2<f32>(f32(gid.x), f32(gid.y)) - f32(N)*0.5) / U.patchL;
+  let kl = length(k);
+  let h0v = h0[q];
+  var w = sqrt(9.81*kl);
+  if (U.depth > 0.0) { w = sqrt(9.81*kl*tanh(min(kl*U.depth, 20.0))); }
+  if (U.period > 0.0) { let w0 = 6.28318530718/U.period; w = floor(w/w0)*w0; }
+  let ph = w * U.time;
+  let ep = vec2<f32>(cos(ph), sin(ph));
+  let h = cmul(h0v.xy, ep) + cmul(h0v.zw, vec2<f32>(ep.x, -ep.y));
+  var kn = vec2<f32>(0.0, 0.0);
+  if (kl > 1e-8) { kn = k/kl; }
+  let ih = vec2<f32>(-h.y, h.x);         // i h
+  let Dx = ih * kn.x;                    // +i k_hat h
+  let Dz = ih * kn.y;
+  let Sx = ih * k.x;                     //  i k h
+  let Sz = ih * k.y;
+  outA[q] = vec4<f32>(h.x - Dx.y, h.y + Dx.x,      // h + i Dx
+                      Dz.x - Sx.y, Dz.y + Sx.x);   // Dz + i Sx
+  outB[q] = Sz;
 }`;
 
-// one butterfly stage, horizontally or vertically, on both packed textures
-var FS_BUTTERFLY = `#version 300 es
-precision highp float;
-uniform sampler2D uA, uB, uBut;
-uniform int uStage, uVert;
-layout(location=0) out vec4 oA;
-layout(location=1) out vec4 oB;
+// Eine Butterfly-Stufe, waagerecht oder senkrecht, auf beiden gepackten Puffern.
+// Die Stufennummer kommt ueber einen dynamischen Uniform-Offset (256-Byte-Schlitze).
+var CS_BUT = `
+struct ButU {                       // Byte-Offsets
+  N: u32,                           //  0
+  stage: u32,                       //  4
+  vert: u32,                        //  8
+  pad0: u32,                        // 12  -> 16 Byte
+};
+@group(0) @binding(0) var<uniform> U: ButU;
+@group(0) @binding(1) var<storage, read> but: array<vec4<f32>>;      // stages*N, Zeile = Stufe
+@group(0) @binding(2) var<storage, read> inA: array<vec4<f32>>;
+@group(0) @binding(3) var<storage, read> inB: array<vec2<f32>>;
+@group(0) @binding(4) var<storage, read_write> outA: array<vec4<f32>>;
+@group(0) @binding(5) var<storage, read_write> outB: array<vec2<f32>>;
 ` + CMUL + `
-void main(){
-  ivec2 px = ivec2(gl_FragCoord.xy);
-  int idx = (uVert == 1) ? px.y : px.x;
-  vec4 d = texelFetch(uBut, ivec2(idx, uStage), 0);   // N wide, one row per stage
-  ivec2 pa = (uVert == 1) ? ivec2(px.x, int(d.z)) : ivec2(int(d.z), px.y);
-  ivec2 pb = (uVert == 1) ? ivec2(px.x, int(d.w)) : ivec2(int(d.w), px.y);
-  vec2 w = d.xy;
-  vec4 a = texelFetch(uA, pa, 0), b = texelFetch(uA, pb, 0);
-  oA = vec4(a.xy + cmul(w, b.xy), a.zw + cmul(w, b.zw));
-  vec4 c = texelFetch(uB, pa, 0), e = texelFetch(uB, pb, 0);
-  oB = vec4(c.xy + cmul(w, e.xy), c.zw + cmul(w, e.zw));
+@compute @workgroup_size(16, 16, 1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let N = U.N;
+  if (gid.x >= N || gid.y >= N) { return; }
+  let idx = select(gid.x, gid.y, U.vert == 1u);
+  let d = but[U.stage*N + idx];
+  let ia = u32(d.z);
+  let ib = u32(d.w);
+  var pa = gid.y*N + ia;
+  var pb = gid.y*N + ib;
+  if (U.vert == 1u) { pa = ia*N + gid.x; pb = ib*N + gid.x; }
+  let w = d.xy;
+  let a = inA[pa];
+  let b = inA[pb];
+  let q = gid.y*N + gid.x;
+  outA[q] = vec4<f32>(a.xy + cmul(w, b.xy), a.zw + cmul(w, b.zw));
+  let c = inB[pa];
+  let e = inB[pb];
+  outB[q] = c + cmul(w, e);
 }`;
 
-// the (-1)^(x+y) recentring, unpacked into a displacement map and a slope map
-var FS_PERMUTE = `#version 300 es
-precision highp float;
-uniform sampler2D uA, uB;
-uniform float uChoppy, uN, uPatch;
-layout(location=0) out vec4 oDisp;
-layout(location=1) out vec4 oGrad;
+// Die (-1)^(x+y)-Umsortierung, entpackt in Verschiebungs- und Steigungskarte
+var CS_PERM = `
+struct PermU {                      // Byte-Offsets
+  N: u32,                           //  0
+  patchL: f32,                      //  4
+  choppy: f32,                      //  8
+  pad0: f32,                        // 12  -> 16 Byte
+};
+@group(0) @binding(0) var<uniform> U: PermU;
+@group(0) @binding(1) var<storage, read> inA: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read> inB: array<vec2<f32>>;
+@group(0) @binding(3) var disp: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(4) var grad: texture_storage_2d<rgba16float, write>;
 
-float sgn(ivec2 q){ return (((q.x + q.y) & 1) == 1) ? -1.0 : 1.0; }
-vec2 dispAt(ivec2 q){                       // horizontal displacement at a texel
-  vec4 a = texelFetch(uA, q, 0) * sgn(q);
-  return vec2(a.y, a.z) * uChoppy;
+fn sgn(q: vec2<u32>) -> f32 { return select(1.0, -1.0, ((q.x + q.y) & 1u) == 1u); }
+fn dispAt(q: vec2<u32>) -> vec2<f32> {       // waagerechte Verschiebung an einem Texel
+  let a = inA[q.y*U.N + q.x] * sgn(q);
+  return vec2<f32>(a.y, a.z) * U.choppy;
 }
-void main(){
-  ivec2 px = ivec2(gl_FragCoord.xy);
-  int N = int(uN);
-  float s = sgn(px);
-  vec4 A = texelFetch(uA, px, 0) * s;
-  vec4 B = texelFetch(uB, px, 0) * s;
+@compute @workgroup_size(16, 16, 1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let N = U.N;
+  if (gid.x >= N || gid.y >= N) { return; }
+  let px = gid.xy;
+  let s = sgn(px);
+  let A = inA[px.y*N + px.x] * s;
+  let B = inB[px.y*N + px.x] * s;
 
-  // Jacobian of the horizontal displacement, wrapped at the patch edge. Below
-  // 1 the surface is compressing; below 0 it has folded over itself, which is
-  // where a real sea throws foam.
-  vec2 xp = dispAt(ivec2((px.x + 1) % N, px.y));
-  vec2 xm = dispAt(ivec2((px.x - 1 + N) % N, px.y));
-  vec2 zp = dispAt(ivec2(px.x, (px.y + 1) % N));
-  vec2 zm = dispAt(ivec2(px.x, (px.y - 1 + N) % N));
-  float ds = 2.0 * uPatch / uN;
-  float axx = (xp.x - xm.x)/ds, azx = (xp.y - xm.y)/ds;
-  float axz = (zp.x - zm.x)/ds, azz = (zp.y - zm.y)/ds;
-  float J = (1.0 + axx)*(1.0 + azz) - axz*azx;
+  // Jacobi-Determinante der waagerechten Verschiebung, am Patchrand umgebrochen.
+  // Unter 1 wird die Flaeche gestaucht, unter 0 hat sie sich ueberschlagen -
+  // dort wirft eine echte See Gischt.
+  let xp = dispAt(vec2<u32>((px.x + 1u) % N, px.y));
+  let xm = dispAt(vec2<u32>((px.x + N - 1u) % N, px.y));
+  let zp = dispAt(vec2<u32>(px.x, (px.y + 1u) % N));
+  let zm = dispAt(vec2<u32>(px.x, (px.y + N - 1u) % N));
+  let ds = 2.0 * U.patchL / f32(N);
+  let axx = (xp.x - xm.x)/ds;
+  let azx = (xp.y - xm.y)/ds;
+  let axz = (zp.x - zm.x)/ds;
+  let azz = (zp.y - zm.y)/ds;
+  let J = (1.0 + axx)*(1.0 + azz) - axz*azx;
 
-  oDisp = vec4(A.y * uChoppy, A.x, A.z * uChoppy, J);     // Dx, h, Dz, J
-  oGrad = vec4(A.w, B.x, 0.0, 0.0);                       // dh/dx, dh/dz
+  textureStore(disp, vec2<i32>(px), vec4<f32>(A.y * U.choppy, A.x, A.z * U.choppy, J));  // Dx, h, Dz, J
+  textureStore(grad, vec2<i32>(px), vec4<f32>(A.w, B.x, 0.0, 0.0));                      // dh/dx, dh/dz
 }`;
 
 var SKY = `
-vec3 skyColor(vec3 dir, vec3 sun){
-  float up = max(dir.y, 0.0);
-  vec3 zenith  = vec3(0.09, 0.20, 0.40);
-  vec3 horizon = vec3(0.56, 0.66, 0.76);
-  vec3 c = mix(horizon, zenith, pow(up, 0.55));
-  float sd = max(dot(dir, sun), 0.0);
-  c += vec3(1.00, 0.55, 0.24) * pow(sd, 7.0) * 0.60;      // glow
-  c += vec3(1.00, 0.88, 0.68) * pow(sd, 1500.0) * 26.0;   // disc
-  float band = pow(1.0 - clamp(abs(dir.y), 0.0, 1.0), 10.0);
-  c = mix(c, vec3(0.70, 0.74, 0.79), band * 0.72);        // horizon haze
-  if (dir.y < 0.0) c = mix(c, vec3(0.05, 0.09, 0.14), clamp(-dir.y*4.0, 0.0, 1.0));
+fn skyColor(dir: vec3<f32>, sun: vec3<f32>) -> vec3<f32> {
+  let up = max(dir.y, 0.0);
+  let zenith  = vec3<f32>(0.09, 0.20, 0.40);
+  let horizon = vec3<f32>(0.56, 0.66, 0.76);
+  var c = mix(horizon, zenith, pow(up, 0.55));
+  let sd = max(dot(dir, sun), 0.0);
+  c += vec3<f32>(1.00, 0.55, 0.24) * pow(sd, 7.0) * 0.60;      // glow
+  c += vec3<f32>(1.00, 0.88, 0.68) * pow(sd, 1500.0) * 26.0;   // disc
+  let band = pow(1.0 - clamp(abs(dir.y), 0.0, 1.0), 10.0);
+  c = mix(c, vec3<f32>(0.70, 0.74, 0.79), band * 0.72);        // horizon haze
+  if (dir.y < 0.0) { c = mix(c, vec3<f32>(0.05, 0.09, 0.14), clamp(-dir.y*4.0, 0.0, 1.0)); }
   return c;
 }
-vec3 tonemap(vec3 c, float e){
-  c *= e;
-  vec3 k = vec3(0.86); vec3 d = max(c - k, vec3(0.0));
+fn tonemap(cIn: vec3<f32>, e: f32) -> vec3<f32> {
+  var c = cIn * e;
+  let k = vec3<f32>(0.86);
+  let d = max(c - k, vec3<f32>(0.0));
   c = min(c, k) + d / (1.0 + d / (1.0 - k));
-  return pow(c, vec3(1.0/1.05));
+  return pow(c, vec3<f32>(1.0/1.05));
 }`;
 
-var FS_SKYBG = `#version 300 es
-precision highp float;
-uniform vec2 uRes; uniform vec3 uSun, uCamR, uCamU, uCamF;
-uniform float uTanHalf, uAspect, uExpo;
-out vec4 o;
+// Himmel als Vollbild-Dreieck. @builtin(position) hat den Ursprung oben links,
+// gl_FragCoord hatte ihn unten links: y wird gespiegelt.
+var SH_SKY = `
+struct SkyU {                       // Byte-Offsets
+  res: vec2<f32>,                   //  0
+  tanHalf: f32,                     //  8
+  aspect: f32,                      // 12
+  sun: vec3<f32>,                   // 16
+  expo: f32,                        // 28
+  camR: vec3<f32>,                  // 32
+  pad1: f32,                        // 44
+  camU: vec3<f32>,                  // 48
+  pad2: f32,                        // 60
+  camF: vec3<f32>,                  // 64
+  pad3: f32,                        // 76  -> 80 Byte
+};
+@group(0) @binding(0) var<uniform> U: SkyU;
 ` + SKY + `
-void main(){
-  vec2 uv = (gl_FragCoord.xy / uRes) * 2.0 - 1.0;
-  vec3 d = normalize(uCamR*(uv.x*uTanHalf*uAspect) + uCamU*(uv.y*uTanHalf) + uCamF);
-  o = vec4(tonemap(skyColor(d, uSun), uExpo), 1.0);
+@vertex fn vs(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
+  var p = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+  return vec4<f32>(p[vi], 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+  let uv = vec2<f32>(pos.x / U.res.x * 2.0 - 1.0, 1.0 - pos.y / U.res.y * 2.0);
+  let d = normalize(U.camR*(uv.x*U.tanHalf*U.aspect) + U.camU*(uv.y*U.tanHalf) + U.camF);
+  return vec4<f32>(tonemap(skyColor(d, U.sun), U.expo), 1.0);
 }`;
 
-var VS_OCEAN = `#version 300 es
-in vec2 aXZ;
-uniform mat4 uVP;
-uniform sampler2D uDisp;
-uniform float uPatch, uFoamThr;
-uniform vec3 uCam;
-out vec3 vW; out vec2 vUV; out float vFoam; out float vDist; out float vFade;
-void main(){
-  vec2 uv = aXZ / uPatch;
-  vec4 d = texture(uDisp, uv);          // Dx, h, Dz, Jacobian
+var SH_OCEAN = `
+struct OceanU {                     // Byte-Offsets
+  vp: mat4x4<f32>,                  //  0
+  cam: vec3<f32>,                   // 64
+  patchL: f32,                      // 76
+  sun: vec3<f32>,                   // 80
+  foamThr: f32,                     // 92
+  expo: f32,                        // 96
+  foamAmt: f32,                     // 100
+  wire: f32,                        // 104
+  pad0: f32,                        // 108  -> 112 Byte
+};
+@group(0) @binding(0) var<uniform> U: OceanU;
+@group(0) @binding(1) var samp: sampler;
+@group(0) @binding(2) var tDisp: texture_2d<f32>;
+@group(0) @binding(3) var tGrad: texture_2d<f32>;
+struct VOut {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) w: vec3<f32>,
+  @location(1) uv: vec2<f32>,
+  @location(2) foam: f32,
+  @location(3) dist: f32,
+  @location(4) fade: f32,
+};
+` + SKY + `
+@vertex fn vs(@location(0) aXZ: vec2<f32>) -> VOut {
+  let uv = aXZ / U.patchL;
+  let d = textureSampleLevel(tDisp, samp, uv, 0.0);   // Dx, h, Dz, Jacobian
   // Past a few hundred metres the grid can no longer resolve a wave, so the
   // displacement is faded out rather than left to alias into noise.
-  float dist = length(aXZ - uCam.xz);
-  float fade = 1.0 - smoothstep(320.0, 1500.0, dist);
-  vec3 w = vec3(aXZ.x + d.x*fade, d.y*fade, aXZ.y + d.z*fade);
+  let dist = length(aXZ - U.cam.xz);
+  let fade = 1.0 - smoothstep(320.0, 1500.0, dist);
+  let w = vec3<f32>(aXZ.x + d.x*fade, d.y*fade, aXZ.y + d.z*fade);
+  var o: VOut;
+  o.foam = clamp(U.foamThr - d.w, 0.0, 1.0) * fade;
+  o.w = w;
+  o.uv = uv;
+  o.dist = dist;
+  o.fade = fade;
+  o.pos = U.vp * vec4<f32>(w, 1.0);
+  return o;
+}
+@fragment fn fs(v: VOut) -> @location(0) vec4<f32> {
+  let g = textureSample(tGrad, samp, v.uv).xy * v.fade;
+  let Nn = normalize(vec3<f32>(-g.x, 1.0, -g.y));
+  let V = normalize(U.cam - v.w);
+  let F = 0.02 + 0.98*pow(1.0 - max(dot(Nn, V), 0.0), 5.0);
+  var R = reflect(-V, Nn);
+  R.y = max(R.y, 0.015);
+  let refl = skyColor(R, U.sun);
 
-  vFoam = clamp(uFoamThr - d.w, 0.0, 1.0) * fade;
-
-  vW = w; vUV = uv; vDist = dist; vFade = fade;
-  gl_Position = uVP * vec4(w, 1.0);
-}`;
-
-var FS_OCEAN = `#version 300 es
-precision highp float;
-in vec3 vW; in vec2 vUV; in float vFoam; in float vDist; in float vFade;
-uniform sampler2D uGrad;
-uniform vec3 uCam, uSun;
-uniform float uExpo, uFoamAmt, uWire;
-out vec4 o;
-` + SKY + `
-void main(){
-  vec2 g = texture(uGrad, vUV).xy * vFade;
-  vec3 N = normalize(vec3(-g.x, 1.0, -g.y));
-  vec3 V = normalize(uCam - vW);
-  float F = 0.02 + 0.98*pow(1.0 - max(dot(N,V), 0.0), 5.0);
-  vec3 R = reflect(-V, N); R.y = max(R.y, 0.015);
-  vec3 refl = skyColor(R, uSun);
-
-  vec3 deep = vec3(0.006, 0.022, 0.040), shallow = vec3(0.016, 0.135, 0.155);
-  vec3 water = mix(deep, shallow, clamp(vW.y*0.26 + 0.42, 0.0, 1.0));
+  let deep = vec3<f32>(0.006, 0.022, 0.040);
+  let shallow = vec3<f32>(0.016, 0.135, 0.155);
+  var water = mix(deep, shallow, clamp(v.w.y*0.26 + 0.42, 0.0, 1.0));
   // ambient skylight into the body of the water: without it the near field,
   // where Fresnel is almost nothing, collapses into a flat dark mass
-  water += skyColor(vec3(0.0, 1.0, 0.0), uSun) * 0.055;
+  water += skyColor(vec3<f32>(0.0, 1.0, 0.0), U.sun) * 0.055;
   // sunlight scattered through the body of a crest toward the eye
-  float sss = pow(max(dot(V, -normalize(vec3(uSun.x, 0.0, uSun.z))), 0.0), 3.0);
-  water += vec3(0.05, 0.29, 0.21) * sss * max(vW.y, 0.0) * 0.32;
+  let sss = pow(max(dot(V, -normalize(vec3<f32>(U.sun.x, 0.0, U.sun.z))), 0.0), 3.0);
+  water += vec3<f32>(0.05, 0.29, 0.21) * sss * max(v.w.y, 0.0) * 0.32;
 
-  vec3 col = mix(water, refl, F);
-  vec3 H = normalize(V + uSun);
-  col += vec3(1.0, 0.94, 0.82) * pow(max(dot(N,H), 0.0), 1100.0) * 32.0 * F;
+  var col = mix(water, refl, F);
+  let H = normalize(V + U.sun);
+  col += vec3<f32>(1.0, 0.94, 0.82) * pow(max(dot(Nn, H), 0.0), 1100.0) * 32.0 * F;
 
-  float foam = smoothstep(0.02, 0.42, vFoam * uFoamAmt);
-  vec3 foamCol = vec3(0.94, 0.96, 0.98) * (0.62 + 0.38*max(dot(N,uSun), 0.0));
+  let foam = smoothstep(0.02, 0.42, v.foam * U.foamAmt);
+  let foamCol = vec3<f32>(0.94, 0.96, 0.98) * (0.62 + 0.38*max(dot(Nn, U.sun), 0.0));
   col = mix(col, foamCol, foam);
-  col = mix(col, skyColor(normalize(vW - uCam), uSun), smoothstep(600.0, 2800.0, vDist));
-  if (uWire > 0.5) col = mix(col, vec3(0.50, 0.86, 0.96), 0.55);
-  o = vec4(tonemap(col, uExpo), 1.0);
+  col = mix(col, skyColor(normalize(v.w - U.cam), U.sun), smoothstep(600.0, 2800.0, v.dist));
+  if (U.wire > 0.5) { col = mix(col, vec3<f32>(0.50, 0.86, 0.96), 0.55); }
+  return vec4<f32>(tonemap(col, U.expo), 1.0);
 }`;
 
-var pSpec, pBut, pPerm, pSky, pOcean;
-try {
-  pSpec  = prog(VS_QUAD, FS_SPEC, "spectrum");
-  pBut   = prog(VS_QUAD, FS_BUTTERFLY, "butterfly");
-  pPerm  = prog(VS_QUAD, FS_PERMUTE, "permute");
-  pSky   = prog(VS_QUAD, FS_SKYBG, "sky");
-  pOcean = prog(VS_OCEAN, FS_OCEAN, "ocean");
-} catch (err) { bail("Shader error: " + err.message); return; }
+/* ------------------------------------------------------- Geraet, Pipelines */
+var device = null, context = null, canvasFormat = null;
+var pipeSpec, pipeBut, pipePerm, pipeSky, pipeOceanTri, pipeOceanLine;
+var bglSpec, bglBut, bglPerm, bglSky, bglOcean;
+var bufSpecU, bufPermU, bufSkyU, bufOceanU, bgSky, sampler;
+var msaaTex = null, msaaView = null, depthTex = null, depthView = null;
+var STAGE_SLOT = 256;                 // ein Uniform-Schlitz je Butterfly-Dispatch
 
-/* -------------------------------------------------------------- resources */
-var quad = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, quad);
-gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
-
-var R = { N: 0, stages: 0 };
-function F32(w,h,data){ return tex(w,h,gl.RGBA32F,gl.RGBA,gl.FLOAT,gl.NEAREST,gl.CLAMP_TO_EDGE,data); }
-var canFilterFloat = !!gl.getExtension("OES_texture_float_linear");
-function SURF(w,h){
-  return canFilterFloat
-    ? tex(w,h,gl.RGBA32F,gl.RGBA,gl.FLOAT,gl.LINEAR,gl.REPEAT,null)
-    : tex(w,h,gl.RGBA16F,gl.RGBA,gl.HALF_FLOAT,gl.LINEAR,gl.REPEAT,null);
+async function baueShader(src, tag) {
+  var m = device.createShaderModule({ label: tag, code: src });
+  var info = await m.getCompilationInfo();
+  info.messages.forEach(function (msg) {
+    var text = "WGSL " + tag + " " + msg.lineNum + ":" + msg.linePos + " " + msg.message;
+    if (msg.type === "error") console.error(text);
+    else if (msg.type === "warning") console.warn(text);
+    else console.info(text);
+  });
+  return m;
 }
 
-var allocNote = "";
-function allocate(N) {
-  var prev = R.N;
-  var bt = butterflyTexture(N), made = {};
-  try {
-    made.but  = F32(N, bt.stages, bt.data);   // N wide, one row per stage
-    made.h0   = F32(N, N, null);
-    made.pA = F32(N,N,null); made.pB = F32(N,N,null);
-    made.qA = F32(N,N,null); made.qB = F32(N,N,null);
-    made.disp = SURF(N,N); made.grad = SURF(N,N);
-    made.fbP = fbo([made.pA, made.pB]);
-    made.fbQ = fbo([made.qA, made.qB]);
-    made.fbOut = fbo([made.disp, made.grad]);
-  } catch (e) { made.fbP = null; }
-  if (!made.fbP || !made.fbQ || !made.fbOut || gl.getError() !== gl.NO_ERROR) {
-    Object.keys(made).forEach(function (k) {
-      if (!made[k]) return;
-      if (k.indexOf("fb") === 0) gl.deleteFramebuffer(made[k]); else gl.deleteTexture(made[k]);
+async function bauePipelines() {
+  var SH = GPUShaderStage, BUF = GPUBufferUsage;
+  var modSpec  = await baueShader(CS_SPEC, "spectrum");
+  var modBut   = await baueShader(CS_BUT, "butterfly");
+  var modPerm  = await baueShader(CS_PERM, "permute");
+  var modSky   = await baueShader(SH_SKY, "sky");
+  var modOcean = await baueShader(SH_OCEAN, "ocean");
+
+  bglSpec = device.createBindGroupLayout({ label: "spectrum", entries: [
+    { binding: 0, visibility: SH.COMPUTE, buffer: { type: "uniform" } },
+    { binding: 1, visibility: SH.COMPUTE, buffer: { type: "read-only-storage" } },
+    { binding: 2, visibility: SH.COMPUTE, buffer: { type: "storage" } },
+    { binding: 3, visibility: SH.COMPUTE, buffer: { type: "storage" } }
+  ]});
+  bglBut = device.createBindGroupLayout({ label: "butterfly", entries: [
+    { binding: 0, visibility: SH.COMPUTE, buffer: { type: "uniform", hasDynamicOffset: true } },
+    { binding: 1, visibility: SH.COMPUTE, buffer: { type: "read-only-storage" } },
+    { binding: 2, visibility: SH.COMPUTE, buffer: { type: "read-only-storage" } },
+    { binding: 3, visibility: SH.COMPUTE, buffer: { type: "read-only-storage" } },
+    { binding: 4, visibility: SH.COMPUTE, buffer: { type: "storage" } },
+    { binding: 5, visibility: SH.COMPUTE, buffer: { type: "storage" } }
+  ]});
+  bglPerm = device.createBindGroupLayout({ label: "permute", entries: [
+    { binding: 0, visibility: SH.COMPUTE, buffer: { type: "uniform" } },
+    { binding: 1, visibility: SH.COMPUTE, buffer: { type: "read-only-storage" } },
+    { binding: 2, visibility: SH.COMPUTE, buffer: { type: "read-only-storage" } },
+    { binding: 3, visibility: SH.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "2d" } },
+    { binding: 4, visibility: SH.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "2d" } }
+  ]});
+  bglSky = device.createBindGroupLayout({ label: "sky", entries: [
+    { binding: 0, visibility: SH.VERTEX | SH.FRAGMENT, buffer: { type: "uniform" } }
+  ]});
+  bglOcean = device.createBindGroupLayout({ label: "ocean", entries: [
+    { binding: 0, visibility: SH.VERTEX | SH.FRAGMENT, buffer: { type: "uniform" } },
+    { binding: 1, visibility: SH.VERTEX | SH.FRAGMENT, sampler: { type: "filtering" } },
+    { binding: 2, visibility: SH.VERTEX | SH.FRAGMENT, texture: { sampleType: "float", viewDimension: "2d" } },
+    { binding: 3, visibility: SH.VERTEX | SH.FRAGMENT, texture: { sampleType: "float", viewDimension: "2d" } }
+  ]});
+
+  function layout(bgl) { return device.createPipelineLayout({ bindGroupLayouts: [bgl] }); }
+  pipeSpec = device.createComputePipeline({ label: "spectrum", layout: layout(bglSpec), compute: { module: modSpec, entryPoint: "main" } });
+  pipeBut  = device.createComputePipeline({ label: "butterfly", layout: layout(bglBut), compute: { module: modBut, entryPoint: "main" } });
+  pipePerm = device.createComputePipeline({ label: "permute", layout: layout(bglPerm), compute: { module: modPerm, entryPoint: "main" } });
+
+  // Himmel: kein Tiefentest, kein Schreiben (wie DEPTH_TEST aus + depthMask(false))
+  pipeSky = device.createRenderPipeline({
+    label: "sky", layout: layout(bglSky),
+    vertex: { module: modSky, entryPoint: "vs" },
+    fragment: { module: modSky, entryPoint: "fs", targets: [{ format: canvasFormat }] },
+    primitive: { topology: "triangle-list", cullMode: "none" },
+    depthStencil: { format: "depth24plus", depthWriteEnabled: false, depthCompare: "always" },
+    multisample: { count: 4 }
+  });
+  // Ozean: Tiefentest LESS mit Schreiben; Wireframe ist dieselbe Indexliste als line-list
+  function oceanPipe(topo) {
+    return device.createRenderPipeline({
+      label: "ocean " + topo, layout: layout(bglOcean),
+      vertex: { module: modOcean, entryPoint: "vs",
+        buffers: [{ arrayStride: 8, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x2" }] }] },
+      fragment: { module: modOcean, entryPoint: "fs", targets: [{ format: canvasFormat }] },
+      primitive: { topology: topo, cullMode: "none" },
+      depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" },
+      multisample: { count: 4 }
     });
-    if (!prev) { bail("Could not create float framebuffers."); return false; }
+  }
+  pipeOceanTri  = oceanPipe("triangle-list");
+  pipeOceanLine = oceanPipe("line-list");
+
+  sampler = device.createSampler({ label: "surface", magFilter: "linear", minFilter: "linear",
+    addressModeU: "repeat", addressModeV: "repeat" });
+  bufSpecU  = device.createBuffer({ label: "specU",  size: 32,  usage: BUF.UNIFORM | BUF.COPY_DST });
+  bufPermU  = device.createBuffer({ label: "permU",  size: 16,  usage: BUF.UNIFORM | BUF.COPY_DST });
+  bufSkyU   = device.createBuffer({ label: "skyU",   size: 80,  usage: BUF.UNIFORM | BUF.COPY_DST });
+  bufOceanU = device.createBuffer({ label: "oceanU", size: 112, usage: BUF.UNIFORM | BUF.COPY_DST });
+  bgSky = device.createBindGroup({ layout: bglSky, entries: [{ binding: 0, resource: { buffer: bufSkyU } }] });
+}
+
+/* -------------------------------------------------------------- resources */
+var R = { N: 0, stages: 0 };
+var allocNote = "";
+
+function freigeben(set) {
+  ["but", "h0", "pA", "pB", "qA", "qB", "stageU", "disp", "grad"].forEach(function (k) {
+    if (set[k]) { set[k].destroy(); set[k] = null; }
+  });
+  set.bgSpec = null; set.bgBut = null; set.bgPerm = null; set.bgOcean = null;
+}
+
+// Puffersatz fuer N anlegen: h0, Butterfly-Tabelle, Ping-Pong P/Q (A vec4, B vec2),
+// die beiden rgba16float-Karten und alle Bind-Groups. Alte Puffer werden freigegeben.
+function allocate(N, ohneWiederholung) {
+  if (!device) return false;
+  var prev = R.N, lim = device.limits;
+  var bytesA = N*N*16, bytesB = N*N*8;
+  if (bytesA > lim.maxStorageBufferBindingSize || bytesA > lim.maxBufferSize || N > lim.maxTextureDimension2D) {
+    if (!prev) return false;
     allocNote = "N=" + N + " would not fit — stayed at " + prev;
     return false;                              // the running sim is untouched
   }
-  ["but","h0","pA","pB","qA","qB","disp","grad"].forEach(function (k) {
-    if (R[k]) gl.deleteTexture(R[k]);
+  var BUF = GPUBufferUsage, TEX = GPUTextureUsage;
+  var bt = butterflyTexture(N), made = {};
+  device.pushErrorScope("out-of-memory");
+  made.but = device.createBuffer({ label: "butterfly", size: bt.stages*N*16, usage: BUF.STORAGE | BUF.COPY_DST });
+  device.queue.writeBuffer(made.but, 0, bt.data);
+  made.h0 = device.createBuffer({ label: "h0", size: bytesA, usage: BUF.STORAGE | BUF.COPY_DST });
+  made.pA = device.createBuffer({ label: "pA", size: bytesA, usage: BUF.STORAGE | BUF.COPY_SRC });
+  made.pB = device.createBuffer({ label: "pB", size: bytesB, usage: BUF.STORAGE | BUF.COPY_SRC });
+  made.qA = device.createBuffer({ label: "qA", size: bytesA, usage: BUF.STORAGE | BUF.COPY_SRC });
+  made.qB = device.createBuffer({ label: "qB", size: bytesB, usage: BUF.STORAGE | BUF.COPY_SRC });
+  made.disp = device.createTexture({ label: "disp", size: [N, N], format: "rgba16float",
+    usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | TEX.COPY_SRC });
+  made.grad = device.createTexture({ label: "grad", size: [N, N], format: "rgba16float",
+    usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | TEX.COPY_SRC });
+  // je Butterfly-Dispatch ein Schlitz (N, Stufe, senkrecht) - dynamischer Offset
+  var nPass = 2*bt.stages, stageData = new Uint32Array(nPass*STAGE_SLOT/4);
+  for (var i = 0; i < nPass; i++) {
+    var o = i*STAGE_SLOT/4;
+    stageData[o] = N; stageData[o+1] = i % bt.stages; stageData[o+2] = (i / bt.stages) | 0; stageData[o+3] = 0;
+  }
+  made.stageU = device.createBuffer({ label: "stageU", size: nPass*STAGE_SLOT, usage: BUF.UNIFORM | BUF.COPY_DST });
+  device.queue.writeBuffer(made.stageU, 0, stageData);
+
+  var dispView = made.disp.createView(), gradView = made.grad.createView();
+  made.bgSpec = device.createBindGroup({ layout: bglSpec, entries: [
+    { binding: 0, resource: { buffer: bufSpecU } },
+    { binding: 1, resource: { buffer: made.h0 } },
+    { binding: 2, resource: { buffer: made.pA } },
+    { binding: 3, resource: { buffer: made.pB } }
+  ]});
+  function bgBut(inA, inB, outA, outB) {
+    return device.createBindGroup({ layout: bglBut, entries: [
+      { binding: 0, resource: { buffer: made.stageU, offset: 0, size: 16 } },
+      { binding: 1, resource: { buffer: made.but } },
+      { binding: 2, resource: { buffer: inA } },
+      { binding: 3, resource: { buffer: inB } },
+      { binding: 4, resource: { buffer: outA } },
+      { binding: 5, resource: { buffer: outB } }
+    ]});
+  }
+  made.bgBut = [bgBut(made.pA, made.pB, made.qA, made.qB),     // P -> Q
+                bgBut(made.qA, made.qB, made.pA, made.pB)];    // Q -> P
+  made.bgPerm = device.createBindGroup({ layout: bglPerm, entries: [
+    { binding: 0, resource: { buffer: bufPermU } },
+    { binding: 1, resource: { buffer: made.pA } },
+    { binding: 2, resource: { buffer: made.pB } },
+    { binding: 3, resource: dispView },
+    { binding: 4, resource: gradView }
+  ]});
+  made.bgOcean = device.createBindGroup({ layout: bglOcean, entries: [
+    { binding: 0, resource: { buffer: bufOceanU } },
+    { binding: 1, resource: sampler },
+    { binding: 2, resource: dispView },
+    { binding: 3, resource: gradView }
+  ]});
+  device.popErrorScope().then(function (err) {
+    if (!err) return;
+    console.warn("WebGPU out of memory at N=" + N + ": " + err.message);
+    if (R.pA !== made.pA) return;              // inzwischen schon wieder ersetzt
+    if (!prev || ohneWiederholung) { rueckfall("out of memory"); return; }
+    allocate(prev, true);                      // zurueck auf die Stufe, die lief
+    allocNote = "N=" + N + " would not fit — stayed at " + prev;
+    buildUI(); refreshReadout();
   });
-  ["fbP","fbQ","fbOut"].forEach(function (k) { if (R[k]) gl.deleteFramebuffer(R[k]); });
+
+  freigeben(R);
   Object.keys(made).forEach(function (k) { R[k] = made[k]; });
   R.N = N; R.stages = bt.stages; allocNote = "";
   uploadH0();
@@ -628,8 +800,7 @@ function uploadH0() {
   var t0 = (performance && performance.now) ? performance.now() : Date.now();
   P.N = R.N;
   var data = buildH0(P);
-  gl.bindTexture(gl.TEXTURE_2D, R.h0);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, R.N, R.N, 0, gl.RGBA, gl.FLOAT, data);
+  device.queue.writeBuffer(R.h0, 0, data);
   // analytic surface variance, so the readout can quote a wave height
   var v = 0, dk = 2*Math.PI/P.patch;
   for (var j = 1; j < R.N; j++) for (var i = 1; i < R.N; i++) {
@@ -640,57 +811,29 @@ function uploadH0() {
   h0BuildMs = ((performance && performance.now) ? performance.now() : Date.now()) - t0;
 }
 
-function drawQuad(p) {
-  gl.bindBuffer(gl.ARRAY_BUFFER, quad);
-  gl.enableVertexAttribArray(p.a.aPos);
-  gl.vertexAttribPointer(p.a.aPos, 2, gl.FLOAT, false, 0, 0);
-  gl.drawArrays(gl.TRIANGLES, 0, 3);
-}
-function bindTex(p, name, unit, t) {
-  gl.activeTexture(gl.TEXTURE0 + unit);
-  gl.bindTexture(gl.TEXTURE_2D, t);
-  gl.uniform1i(p.U(name), unit);
-}
+/* die ganze Simulation fuer einen Frame: spectrum, 2*log2(N) butterflies, permute -
+   alles Dispatches in einem Compute-Pass, aufgezeichnet in den uebergebenen Encoder */
+var specData = new ArrayBuffer(32), specU32 = new Uint32Array(specData), specF32 = new Float32Array(specData);
+var permData = new ArrayBuffer(16), permU32 = new Uint32Array(permData), permF32 = new Float32Array(permData);
+function simulate(enc, time) {
+  specU32[0] = R.N; specF32[1] = P.patch; specF32[2] = time; specF32[3] = P.depth; specF32[4] = P.period;
+  device.queue.writeBuffer(bufSpecU, 0, specData);
+  permU32[0] = R.N; permF32[1] = P.patch; permF32[2] = P.choppy;
+  device.queue.writeBuffer(bufPermU, 0, permData);
 
-/* the whole simulation for one frame: spectrum, 2*log2(N) butterflies, permute */
-function simulate(time) {
-  gl.disable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE); gl.disable(gl.BLEND);
-  gl.viewport(0, 0, R.N, R.N);
-
-  gl.bindFramebuffer(gl.FRAMEBUFFER, R.fbP);
-  gl.useProgram(pSpec);
-  bindTex(pSpec, "uH0", 0, R.h0);
-  gl.uniform1f(pSpec.U("uN"), R.N);
-  gl.uniform1f(pSpec.U("uPatch"), P.patch);
-  gl.uniform1f(pSpec.U("uTime"), time);
-  gl.uniform1f(pSpec.U("uDepth"), P.depth);
-  gl.uniform1f(pSpec.U("uPeriod"), P.period);
-  drawQuad(pSpec);
-
-  var srcIsP = true;
-  gl.useProgram(pBut);
-  for (var vert = 0; vert < 2; vert++) {
-    for (var s = 0; s < R.stages; s++) {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, srcIsP ? R.fbQ : R.fbP);
-      bindTex(pBut, "uA", 0, srcIsP ? R.pA : R.qA);
-      bindTex(pBut, "uB", 1, srcIsP ? R.pB : R.qB);
-      bindTex(pBut, "uBut", 2, R.but);
-      gl.uniform1i(pBut.U("uStage"), s);
-      gl.uniform1i(pBut.U("uVert"), vert);
-      drawQuad(pBut);
-      srcIsP = !srcIsP;
-    }
+  var wg = Math.ceil(R.N/16), pass = enc.beginComputePass({ label: "ocean fft" });
+  pass.setPipeline(pipeSpec);
+  pass.setBindGroup(0, R.bgSpec);
+  pass.dispatchWorkgroups(wg, wg);
+  pass.setPipeline(pipeBut);
+  for (var i = 0; i < 2*R.stages; i++) {            // gerade Anzahl: Ergebnis landet in P
+    pass.setBindGroup(0, R.bgBut[i & 1], [i*STAGE_SLOT]);
+    pass.dispatchWorkgroups(wg, wg);
   }
-
-  gl.bindFramebuffer(gl.FRAMEBUFFER, R.fbOut);
-  gl.useProgram(pPerm);
-  bindTex(pPerm, "uA", 0, srcIsP ? R.pA : R.qA);
-  bindTex(pPerm, "uB", 1, srcIsP ? R.pB : R.qB);
-  gl.uniform1f(pPerm.U("uChoppy"), P.choppy);
-  gl.uniform1f(pPerm.U("uN"), R.N);
-  gl.uniform1f(pPerm.U("uPatch"), P.patch);
-  drawQuad(pPerm);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  pass.setPipeline(pipePerm);
+  pass.setBindGroup(0, R.bgPerm);
+  pass.dispatchWorkgroups(wg, wg);
+  pass.end();
 }
 
 /* ------------------------------------------------------------ grid + view */
@@ -698,6 +841,12 @@ function m4(){ return new Float32Array(16); }
 function perspective(o, fovy, aspect, near, far) {
   var f = 1/Math.tan(fovy*0.5), nf = 1/(near-far);
   o.fill(0); o[0]=f/aspect; o[5]=f; o[10]=(far+near)*nf; o[11]=-1; o[14]=2*far*near*nf; return o;
+}
+// WebGPU-Clipraum: Tiefe in [0,1] statt [-1,1] - dritte Zeile umrechnen (SPEC Abschnitt 4)
+function zuWebGPUTiefe(p) {
+  p[2] = 0.5*p[2] + 0.5*p[3]; p[6] = 0.5*p[6] + 0.5*p[7];
+  p[10] = 0.5*p[10] + 0.5*p[11]; p[14] = 0.5*p[14] + 0.5*p[15];
+  return p;
 }
 function lookAt(o, e, c) {
   var zx=e[0]-c[0], zy=e[1]-c[1], zz=e[2]-c[2];
@@ -719,10 +868,11 @@ function mul(o,a,b){
   return o;
 }
 
-var grid = { vbo: gl.createBuffer(), ibo: gl.createBuffer(), count: 0, G: 0 };
+var grid = { vbo: null, ibo: null, count: 0, G: 0 };
 // Vertex density is warped toward the viewer: |u|^2.4 puts most of the grid in
 // the near field where waves are resolvable, while still reaching the horizon.
 function buildGrid(Gn) {
+  if (!device) return;
   var EXT = P.gridExt, POW = P.gridPow, i, j, n = 0;
   var v = new Float32Array((Gn+1)*(Gn+1)*2);
   for (j = 0; j <= Gn; j++) for (i = 0; i <= Gn; i++) {
@@ -735,10 +885,13 @@ function buildGrid(Gn) {
     var a = j*(Gn+1)+i, b = a+1, c = a+Gn+1, d = c+1;
     idx[m++]=a; idx[m++]=c; idx[m++]=b; idx[m++]=b; idx[m++]=c; idx[m++]=d;
   }
-  gl.bindBuffer(gl.ARRAY_BUFFER, grid.vbo);
-  gl.bufferData(gl.ARRAY_BUFFER, v, gl.STATIC_DRAW);
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, grid.ibo);
-  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
+  var BUF = GPUBufferUsage;
+  if (grid.vbo) grid.vbo.destroy();
+  if (grid.ibo) grid.ibo.destroy();
+  grid.vbo = device.createBuffer({ label: "grid vbo", size: v.byteLength, usage: BUF.VERTEX | BUF.COPY_DST });
+  grid.ibo = device.createBuffer({ label: "grid ibo", size: idx.byteLength, usage: BUF.INDEX | BUF.COPY_DST });
+  device.queue.writeBuffer(grid.vbo, 0, v);
+  device.queue.writeBuffer(grid.ibo, 0, idx);
   grid.count = idx.length; grid.G = Gn;
 }
 
@@ -758,6 +911,7 @@ function updateCam() {
   cam.pos = [0, P.camH, 0];
   lookAt(view, cam.pos, [cam.pos[0]+cam.F[0], cam.pos[1]+cam.F[1], cam.pos[2]+cam.F[2]]);
   perspective(proj, FOV, cssW/cssH, 0.4, 9000);
+  zuWebGPUTiefe(proj);
   mul(vp, proj, view);
 }
 function resize() {
@@ -767,6 +921,16 @@ function resize() {
   W = Math.max(2, Math.round(cssW*dpr)); H = Math.max(2, Math.round(cssH*dpr));
   if (canvas.width !== W) canvas.width = W;
   if (canvas.height !== H) canvas.height = H;
+  // MSAA-Farb- und Tiefentextur folgen der Canvas-Groesse; alte werden freigegeben
+  if (device && (!msaaTex || msaaTex.width !== W || msaaTex.height !== H)) {
+    if (msaaTex) msaaTex.destroy();
+    if (depthTex) depthTex.destroy();
+    msaaTex = device.createTexture({ label: "msaa", size: [W, H], sampleCount: 4, format: canvasFormat,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT });
+    depthTex = device.createTexture({ label: "depth", size: [W, H], sampleCount: 4, format: "depth24plus",
+      usage: GPUTextureUsage.RENDER_ATTACHMENT });
+    msaaView = msaaTex.createView(); depthView = depthTex.createView();
+  }
   updateCam();
 }
 function sunDir() {
@@ -774,38 +938,37 @@ function sunDir() {
   return [Math.cos(el)*Math.sin(az), Math.sin(el), Math.cos(el)*Math.cos(az)];
 }
 
-function render() {
+var skyData = new Float32Array(20), oceanData = new Float32Array(28);
+function render(enc) {
   var sun = sunDir();
-  gl.viewport(0, 0, W, H);
-  gl.disable(gl.DEPTH_TEST); gl.depthMask(false); gl.disable(gl.CULL_FACE);
-  gl.useProgram(pSky);
-  gl.uniform2f(pSky.U("uRes"), W, H);
-  gl.uniform3f(pSky.U("uSun"), sun[0], sun[1], sun[2]);
-  gl.uniform3f(pSky.U("uCamR"), cam.R[0], cam.R[1], cam.R[2]);
-  gl.uniform3f(pSky.U("uCamU"), cam.U[0], cam.U[1], cam.U[2]);
-  gl.uniform3f(pSky.U("uCamF"), cam.F[0], cam.F[1], cam.F[2]);
-  gl.uniform1f(pSky.U("uTanHalf"), Math.tan(FOV*0.5));
-  gl.uniform1f(pSky.U("uAspect"), cssW/cssH);
-  gl.uniform1f(pSky.U("uExpo"), P.expo);
-  drawQuad(pSky);
+  skyData[0] = W; skyData[1] = H; skyData[2] = Math.tan(FOV*0.5); skyData[3] = cssW/cssH;
+  skyData[4] = sun[0]; skyData[5] = sun[1]; skyData[6] = sun[2]; skyData[7] = P.expo;
+  skyData[8] = cam.R[0]; skyData[9] = cam.R[1]; skyData[10] = cam.R[2];
+  skyData[12] = cam.U[0]; skyData[13] = cam.U[1]; skyData[14] = cam.U[2];
+  skyData[16] = cam.F[0]; skyData[17] = cam.F[1]; skyData[18] = cam.F[2];
+  device.queue.writeBuffer(bufSkyU, 0, skyData);
 
-  gl.depthMask(true); gl.clear(gl.DEPTH_BUFFER_BIT); gl.enable(gl.DEPTH_TEST);
-  gl.useProgram(pOcean);
-  gl.uniformMatrix4fv(pOcean.U("uVP"), false, vp);
-  bindTex(pOcean, "uDisp", 0, R.disp);
-  bindTex(pOcean, "uGrad", 1, R.grad);
-  gl.uniform1f(pOcean.U("uPatch"), P.patch);
-  gl.uniform1f(pOcean.U("uFoamThr"), P.foamThr);
-  gl.uniform1f(pOcean.U("uFoamAmt"), P.foamAmt);
-  gl.uniform1f(pOcean.U("uExpo"), P.expo);
-  gl.uniform1f(pOcean.U("uWire"), ui.wire ? 1 : 0);
-  gl.uniform3f(pOcean.U("uCam"), cam.pos[0], cam.pos[1], cam.pos[2]);
-  gl.uniform3f(pOcean.U("uSun"), sun[0], sun[1], sun[2]);
-  gl.bindBuffer(gl.ARRAY_BUFFER, grid.vbo);
-  gl.enableVertexAttribArray(pOcean.a.aXZ);
-  gl.vertexAttribPointer(pOcean.a.aXZ, 2, gl.FLOAT, false, 0, 0);
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, grid.ibo);
-  gl.drawElements(ui.wire ? gl.LINES : gl.TRIANGLES, grid.count, gl.UNSIGNED_INT, 0);
+  oceanData.set(vp, 0);
+  oceanData[16] = cam.pos[0]; oceanData[17] = cam.pos[1]; oceanData[18] = cam.pos[2]; oceanData[19] = P.patch;
+  oceanData[20] = sun[0]; oceanData[21] = sun[1]; oceanData[22] = sun[2]; oceanData[23] = P.foamThr;
+  oceanData[24] = P.expo; oceanData[25] = P.foamAmt; oceanData[26] = ui.wire ? 1 : 0; oceanData[27] = 0;
+  device.queue.writeBuffer(bufOceanU, 0, oceanData);
+
+  var pass = enc.beginRenderPass({
+    label: "ocean frame",
+    colorAttachments: [{ view: msaaView, resolveTarget: context.getCurrentTexture().createView(),
+      clearValue: { r: 0.031, g: 0.051, b: 0.071, a: 1 }, loadOp: "clear", storeOp: "discard" }],
+    depthStencilAttachment: { view: depthView, depthClearValue: 1.0, depthLoadOp: "clear", depthStoreOp: "discard" }
+  });
+  pass.setPipeline(pipeSky);
+  pass.setBindGroup(0, bgSky);
+  pass.draw(3);
+  pass.setPipeline(ui.wire ? pipeOceanLine : pipeOceanTri);
+  pass.setBindGroup(0, R.bgOcean);
+  pass.setVertexBuffer(0, grid.vbo);
+  pass.setIndexBuffer(grid.ibo, "uint32");
+  pass.drawIndexed(grid.count);
+  pass.end();
 }
 
 /* -------------------------------------------------------------------- UI */
@@ -889,8 +1052,8 @@ function refreshReadout() {
   var nyq = 2*P.patch/R.N, cut = 2*Math.PI*P.cutoff;
   var specBound = cut > nyq;
   var mark = function (on, txt) { return on ? "<b>" + txt + "</b>" : txt; };
-  var surfBytes = canFilterFloat ? 16 : 8;
-  var vram = (R.N*R.N*(16*5 + surfBytes*2) + R.N*R.stages*16) / 1048576;
+  // Speicher wie angelegt: h0 + 2x A (vec4) + 2x B (vec2) + zwei rgba16float-Karten + Butterfly-Tabelle
+  var vram = (R.N*R.N*(16*3 + 8*2 + 8*2) + R.N*R.stages*16) / 1048576;
   readout.innerHTML =
     "H<sub>s</sub> <b>" + hs.toFixed(2) + " m</b> &nbsp;·&nbsp; waves " + P.patch.toFixed(0) +
     " m &rarr; " + mark(!specBound, nyq.toFixed(2) + " m grid") + " &nbsp;·&nbsp; cutoff " +
@@ -942,7 +1105,7 @@ stage.addEventListener("pointermove", function (e) {
   if (!ptrs.has(e.pointerId) || !drag || ptrs.size !== 1) return;
   ptrs.set(e.pointerId, {x:e.clientX, y:e.clientY});
   cam.yaw = drag.yaw - (e.clientX - drag.x)*0.0032;
-  cam.pitch = Math.max(-0.85, Math.min(0.62, drag.pitch + (e.clientY - drag.y)*0.0026));
+  cam.pitch = Math.max(-0.85, Math.min(0.62, drag.pitch - (e.clientY - drag.y)*0.0026));   // Maus hoch = Blick hoch
   updateCam(); e.preventDefault();
 });
 function lift(e) { ptrs.delete(e.pointerId); if (!ptrs.size) drag = null; }
@@ -973,13 +1136,101 @@ function tick(now) {
   if (fT > 0.5) { fps = fN/fT; fT = 0; fN = 0; refreshReadout(); }
   if (!ui.paused) simTime += dt * P.speed;
   if (ui.dirty) { uploadH0(); ui.dirty = false; refreshReadout(); }
-  simulate(simTime);
   updateCam();
-  render();
+  var enc = device.createCommandEncoder({ label: "frame" });
+  simulate(enc, simTime);
+  render(enc);
+  device.queue.submit([enc.finish()]);
+}
+
+/* ------------------------------------------------------------ Ruecklesen */
+function halbZuFloat(h) {
+  var s = (h & 0x8000) ? -1 : 1, e = (h >> 10) & 0x1f, m = h & 0x3ff;
+  if (e === 0) return s * Math.pow(2, -14) * (m / 1024);
+  if (e === 31) return m ? NaN : s * Infinity;
+  return s * Math.pow(2, e - 15) * (1 + m / 1024);
+}
+// Kopie eines Storage-Puffers in einen Staging-Puffer aufzeichnen
+function stagingPuffer(enc, src, bytes) {
+  var st = device.createBuffer({ label: "staging", size: bytes, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  enc.copyBufferToBuffer(src, 0, st, 0, bytes);
+  return st;
+}
+// Kopie einer N x N rgba16float-Textur (8 Byte je Texel, Zeilen sind bei N >= 32 256-Byte-Vielfache)
+function stagingTextur(enc, tex, n) {
+  var st = device.createBuffer({ label: "staging tex", size: n*8*n, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  enc.copyTextureToBuffer({ texture: tex }, { buffer: st, bytesPerRow: n*8, rowsPerImage: n }, { width: n, height: n });
+  return st;
+}
+async function lies(st, halb) {
+  await st.mapAsync(GPUMapMode.READ);
+  var ab = st.getMappedRange().slice(0);
+  st.unmap(); st.destroy();
+  if (!halb) return new Float32Array(ab);
+  var u = new Uint16Array(ab), f = new Float32Array(u.length);
+  for (var i = 0; i < u.length; i++) f[i] = halbZuFloat(u[i]);
+  return f;
+}
+
+/* CPU-Referenz derselben Kette (Spektrum, Butterflies ueber die Tabelle,
+   Umsortierung) in doppelter Genauigkeit - fuer oceanDebug.check() */
+function cpuReference(t) {
+  var n = R.N, stages = R.stages, bt = butterflyTexture(n).data;
+  var h0 = buildH0(P), i, j, x, y, q;
+  var A = new Float64Array(n*n*4), B = new Float64Array(n*n*2);
+  for (j = 0; j < n; j++) for (i = 0; i < n; i++) {
+    var kx = 2*Math.PI*(i - n*0.5)/P.patch, kz = 2*Math.PI*(j - n*0.5)/P.patch;
+    var kl = Math.sqrt(kx*kx + kz*kz);
+    q = j*n + i;
+    var w = P.depth > 0 ? Math.sqrt(9.81*kl*Math.tanh(Math.min(kl*P.depth, 20))) : Math.sqrt(9.81*kl);
+    if (P.period > 0) { var w0 = 2*Math.PI/P.period; w = Math.floor(w/w0)*w0; }
+    var ph = w*t, ex = Math.cos(ph), ey = Math.sin(ph);
+    var h0r = h0[q*4], h0i = h0[q*4+1], c0r = h0[q*4+2], c0i = h0[q*4+3];
+    var hx = (h0r*ex - h0i*ey) + (c0r*ex + c0i*ey);
+    var hy = (h0r*ey + h0i*ex) + (c0i*ex - c0r*ey);
+    var knx = kl > 1e-8 ? kx/kl : 0, knz = kl > 1e-8 ? kz/kl : 0;
+    var ihx = -hy, ihy = hx;
+    A[q*4]   = hx - ihy*knx;  A[q*4+1] = hy + ihx*knx;
+    A[q*4+2] = ihx*knz - ihy*kx;  A[q*4+3] = ihy*knz + ihx*kx;
+    B[q*2] = ihx*kz; B[q*2+1] = ihy*kz;
+  }
+  var A2 = new Float64Array(n*n*4), B2 = new Float64Array(n*n*2), tmp;
+  for (var vert = 0; vert < 2; vert++) for (var s = 0; s < stages; s++) {
+    for (y = 0; y < n; y++) for (x = 0; x < n; x++) {
+      var o = (s*n + (vert ? y : x))*4;
+      var wr = bt[o], wi = bt[o+1], top = bt[o+2], bot = bt[o+3];
+      var pa = vert ? top*n + x : y*n + top, pb = vert ? bot*n + x : y*n + bot, out = y*n + x;
+      for (var c = 0; c < 4; c += 2) {
+        var br = A[pb*4+c], bi = A[pb*4+c+1];
+        A2[out*4+c]   = A[pa*4+c]   + (wr*br - wi*bi);
+        A2[out*4+c+1] = A[pa*4+c+1] + (wr*bi + wi*br);
+      }
+      var er = B[pb*2], ei = B[pb*2+1];
+      B2[out*2]   = B[pa*2]   + (wr*er - wi*ei);
+      B2[out*2+1] = B[pa*2+1] + (wr*ei + wi*er);
+    }
+    tmp = A; A = A2; A2 = tmp; tmp = B; B = B2; B2 = tmp;
+  }
+  var disp = new Float64Array(n*n*4), grad = new Float64Array(n*n*4);
+  function sgn(xx, yy) { return ((xx + yy) & 1) ? -1 : 1; }
+  function dispAt(xx, yy) { var qq = yy*n + xx, sg = sgn(xx, yy); return [A[qq*4+1]*sg*P.choppy, A[qq*4+2]*sg*P.choppy]; }
+  var ds = 2*P.patch/n;
+  for (y = 0; y < n; y++) for (x = 0; x < n; x++) {
+    q = y*n + x;
+    var sg = sgn(x, y);
+    var xp = dispAt((x+1) % n, y), xm = dispAt((x-1+n) % n, y), zp = dispAt(x, (y+1) % n), zm = dispAt(x, (y-1+n) % n);
+    var axx = (xp[0]-xm[0])/ds, azx = (xp[1]-xm[1])/ds, axz = (zp[0]-zm[0])/ds, azz = (zp[1]-zm[1])/ds;
+    var J = (1+axx)*(1+azz) - axz*azx;
+    disp[q*4] = A[q*4+1]*sg*P.choppy; disp[q*4+1] = A[q*4]*sg; disp[q*4+2] = A[q*4+2]*sg*P.choppy; disp[q*4+3] = J;
+    grad[q*4] = A[q*4+3]*sg; grad[q*4+1] = B[q*2]*sg;
+  }
+  return { A: A, B: B, disp: disp, grad: grad };
 }
 
 /* A small read-only surface for verifying the GPU pipeline against a CPU
-   reference, and for poking at the simulation from the console. */
+   reference, and for poking at the simulation from the console. Ruecklesen
+   laeuft ueber Staging-Puffer und mapAsync, daher liefern rmsSlope, readFFT
+   und check Promises. */
 window.oceanDebug = {
   params: P,
   phillips: phillips,
@@ -992,26 +1243,60 @@ window.oceanDebug = {
     if (o.N && o.N !== R.N) allocate(o.N); else uploadH0();
     buildUI(); refreshReadout();
   },
-  simulateAt: function (t) { simulate(t); },
+  simulateAt: function (t) {
+    var enc = device.createCommandEncoder({ label: "simulateAt" });
+    simulate(enc, t);
+    device.queue.submit([enc.finish()]);
+  },
   // rms of the finished slope map: the statistic that reads as surface texture,
   // and unlike a screenshot it does not change when the seed re-rolls
-  rmsSlope: function () {
-    var n = R.N, buf = new Float32Array(n*n*4);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, R.fbOut);
-    gl.readBuffer(gl.COLOR_ATTACHMENT1);
-    gl.readPixels(0, 0, n, n, gl.RGBA, gl.FLOAT, buf);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    var s = 0;
+  rmsSlope: async function () {
+    var n = R.N, enc = device.createCommandEncoder();
+    var st = stagingTextur(enc, R.grad, n);
+    device.queue.submit([enc.finish()]);
+    var buf = await lies(st, true), s = 0;
     for (var i = 0; i < n*n; i++) s += buf[i*4]*buf[i*4] + buf[i*4+1]*buf[i*4+1];
     return Math.sqrt(s/(n*n));
   },
-  // the packed complex FFT result, before the (-1)^(x+y) recentring
-  readFFT: function (which) {
-    var n = R.N, out = new Float32Array(n*n*4);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, R.fbP);
-    gl.readBuffer(which === 1 ? gl.COLOR_ATTACHMENT1 : gl.COLOR_ATTACHMENT0);
-    gl.readPixels(0, 0, n, n, gl.RGBA, gl.FLOAT, out);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  // the packed complex FFT result, before the (-1)^(x+y) recentring; B comes
+  // back widened to four channels like the old render target
+  readFFT: async function (which) {
+    var n = R.N, enc = device.createCommandEncoder();
+    var st = which === 1 ? stagingPuffer(enc, R.pB, n*n*8) : stagingPuffer(enc, R.pA, n*n*16);
+    device.queue.submit([enc.finish()]);
+    var raw = await lies(st, false);
+    if (which !== 1) return raw;
+    var out = new Float32Array(n*n*4);
+    for (var i = 0; i < n*n; i++) { out[i*4] = raw[i*2]; out[i*4+1] = raw[i*2+1]; }
+    return out;
+  },
+  cpuReference: cpuReference,
+  // GPU gegen CPU-Referenz bei kleinem N: groesste Abweichung je Feld
+  check: async function (N, t) {
+    N = N || 64; if (t === undefined) t = 3.7;
+    var prevN = R.N;
+    if (R.N !== N && !allocate(N)) return { error: "could not allocate N=" + N };
+    var n = R.N, ref = cpuReference(t);
+    var enc = device.createCommandEncoder({ label: "check" });
+    simulate(enc, t);
+    var stA = stagingPuffer(enc, R.pA, n*n*16), stB = stagingPuffer(enc, R.pB, n*n*8);
+    var stD = stagingTextur(enc, R.disp, n), stG = stagingTextur(enc, R.grad, n);
+    device.queue.submit([enc.finish()]);
+    var gA = await lies(stA, false), gB = await lies(stB, false), gD = await lies(stD, true), gG = await lies(stG, true);
+    function vergleich(g, c, stride, chans) {
+      var md = 0, ma = 0, bad = 0;
+      for (var i = 0; i < n*n; i++) for (var k = 0; k < chans; k++) {
+        var gv = g[i*stride+k], cv = c[i*stride+k];
+        if (!isFinite(gv)) { bad++; continue; }
+        var d = Math.abs(gv - cv); if (d > md) md = d;
+        var a = Math.abs(cv); if (a > ma) ma = a;
+      }
+      return { maxDiff: md, maxAbs: ma, nonFinite: bad };
+    }
+    var out = { N: n, t: t, seed: P.seed,
+      fftA: vergleich(gA, ref.A, 4, 4), fftB: vergleich(gB, ref.B, 2, 2),
+      disp: vergleich(gD, ref.disp, 4, 4), grad: vergleich(gG, ref.grad, 4, 2) };
+    if (prevN !== n) { allocate(prevN); buildUI(); refreshReadout(); }
     return out;
   }
 };
@@ -1020,16 +1305,30 @@ window.addEventListener("resize", resize);
 window.addEventListener("orientationchange", function () { setTimeout(resize, 200); });
 document.addEventListener("visibilitychange", function () { last = 0; });
 
-if (allocate(DEFAULTS.N)) {
+/* ----------------------------------------------------------------- start */
+async function main() {
+  var g = null;
+  try { g = await starteWebGPU(canvas); }
+  catch (e) { return rueckfall("init failed: " + (e && e.message)); }
+  if (!g) return;                              // Rueckfall laeuft bereits
+  device = g.device; context = g.context; canvasFormat = g.format;
+
+  device.pushErrorScope("validation");
+  try { await bauePipelines(); }
+  catch (e) { console.error("WebGPU setup:", e && e.message); await device.popErrorScope(); return rueckfall("setup exception"); }
+  var err = await device.popErrorScope();
+  if (err) { console.error("WebGPU validation:", err.message); return rueckfall("validation error"); }
+
+  if (!allocate(DEFAULTS.N)) return rueckfall("allocation failed");
   buildGrid(ui.meshG);
   buildUI();
   resize();
   refreshReadout();
   requestAnimationFrame(tick);
 }
+main();
 
 })();
 </script>
-<!--CONTENT-END-->
-</body>
-</html>
+
+</body></html>

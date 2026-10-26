@@ -1,6 +1,6 @@
 # Two Ways to Cut a Solid
 
-A side-by-side WebGL demo of the same boolean operation evaluated two ways:
+A side-by-side demo of the same boolean operation evaluated two ways:
 
 | | MESH · B-rep | FIELD · SDF |
 | --- | --- | --- |
@@ -10,13 +10,16 @@ A side-by-side WebGL demo of the same boolean operation evaluated two ways:
 | Cost scales with | triangle count, on the CPU | screen pixels, on the GPU |
 | Smooth blends | no equivalent | one `smin()` |
 
-Single self-contained `index.html`. No build step, no libraries — raw WebGL 1.0
-and a BSP CSG solver written from scratch.
+No build step, no libraries — a BSP CSG solver written from scratch and raw GPU
+code. `index.html` renders with WebGPU; `webgl.html` is the WebGL 1.0
+version the demo started as, loaded automatically when WebGPU is not available. Both are single
+files; the fonts come from `../fonts/`.
 
 Both panes share one camera, one material and one lighting rig. The lighting
-GLSL is written once and pasted into both fragment shaders, because if the two
-panes were lit even slightly differently the comparison would be worthless.
-Verified: the silhouettes agree to 0.3% and interior pixels to under 1/255.
+code is written once and pasted into both fragment shaders (WGSL in
+`index.html`, GLSL in `webgl.html`), because if the two panes were lit even
+slightly differently the comparison would be worthless. Verified on the WebGL
+version: the silhouettes agree to 0.3% and interior pixels to under 1/255.
 
 ## Controls
 

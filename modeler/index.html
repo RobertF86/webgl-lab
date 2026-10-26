@@ -1,17 +1,7 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#14171A" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#E8EBED" media="(prefers-color-scheme: light)">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="description" content="A small polygon modeller in WebGL: sub-object selection, move/rotate/scale, extrude and chamfer.">
-<!--CONTENT-START-->
-<title>Poly Bench</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<!doctype html><html lang="en" data-theme="dark"><head><meta charset=utf-8>
+<title>Poly Bench</title><meta name=viewport content="width=device-width,initial-scale=1"></head><body>
+
+<link rel="stylesheet" href="../fonts/fonts.css">
 <style>
 :root{
   --bg:#E8EBED; --panel:rgba(255,255,255,.86); --panel-solid:#FFFFFF;
@@ -128,10 +118,26 @@ input[type=range]:focus-visible{outline:2px solid var(--sel);outline-offset:4px;
 #fallback strong{display:block;margin-bottom:10px;font-size:13px;font-weight:600;
   letter-spacing:.14em;text-transform:uppercase;}
 #fallback p{max-width:34ch;margin:0 auto;line-height:1.6;color:var(--muted);font-size:15px;}
+
+/* ---- Kompaktstufe: Handy und Einbettung im Rahmen. Nur kleine Fenster,
+   der Desktop bleibt wie er ist. ---- */
+@media (max-width: 640px), (max-height: 460px){
+  .stats, .hint{ display:none; }
+  .hud{ padding:6px; }
+  .group{ padding:2px; gap:1px; }
+  .group button{ font-size:10px; min-height:26px; padding:4px 8px; }
+  .dock{ padding-bottom:6px; }
+  .card{ width:min(470px, calc(100vw - 12px)); }
+  .row{ padding:2px; gap:1px; }
+  .row button{ font-size:10px; min-height:26px; padding:3px 4px; letter-spacing:.02em; }
+  .sep{ margin:3px 2px; }
+  .amt{ padding:3px 8px 4px; gap:6px; }
+  .amt label, .amt output{ font-size:9px; }
+}
 @media (prefers-reduced-motion: reduce){*{transition-duration:.01ms !important;}}
 </style>
-</head>
-<body>
+
+
 <div id="stage"><canvas id="gl" aria-label="3D polygon modelling viewport"></canvas></div>
 
 <div class="hud tl">
@@ -179,13 +185,38 @@ input[type=range]:focus-visible{outline:2px solid var(--sel);outline-offset:4px;
 </div>
 
 <div id="fallback"><div>
-  <strong>WebGL unavailable</strong>
-  <p id="fallbackMsg">This browser could not start a WebGL context. Try Safari or Chrome with hardware acceleration enabled.</p>
+  <strong>WebGPU unavailable</strong>
+  <p id="fallbackMsg">This browser could not start a WebGPU context. Try Safari or Chrome with hardware acceleration enabled.</p>
 </div></div>
 
 <script>
 "use strict";
-(function () {
+
+/* -------------------------------------------- WebGPU-Start und Rückfall */
+// Ohne WebGPU (oder bei einem Validierungsfehler beim Start) wird die
+// WebGL-Fassung geladen; das Hinweis-Overlay bleibt für Geräteverlust.
+function zeigeHinweis(text) {
+  document.getElementById("fallbackMsg").textContent = text;
+  document.getElementById("fallback").classList.add("show");
+}
+function rueckfall(grund) {
+	console.error("WebGPU unavailable (" + grund + "), switching to the WebGL version");
+	location.replace("webgl.html#fallback=" + encodeURIComponent(grund));
+}
+async function starteWebGPU(canvas) {
+	if (!navigator.gpu) return rueckfall(window.isSecureContext ? "no navigator.gpu" : "insecure context, WebGPU needs https or localhost");
+	var adapter = await navigator.gpu.requestAdapter();
+	if (!adapter) return rueckfall("no adapter");
+	var device = await adapter.requestDevice();
+	device.addEventListener("uncapturederror", function (e) { console.error("WebGPU:", e.error.message); });
+	device.lost.then(function (info) { if (info.reason !== "destroyed") zeigeHinweis("GPU device lost: " + info.message); });
+	var context = canvas.getContext("webgpu");
+	var format = navigator.gpu.getPreferredCanvasFormat();
+	context.configure({ device: device, format: format, alphaMode: "opaque" });
+	return { adapter: adapter, device: device, context: context, format: format };
+}
+
+(async function () {
 
 /* ==========================================================================
    Editable-poly core.
@@ -595,155 +626,227 @@ function rotateAround(p, pivot, axis, ang) {
 }
 
 var canvas = document.getElementById("gl");
-var gl = null;
-try {
-  var glo = { antialias: true, alpha: false, depth: true, premultipliedAlpha: false };
-  gl = canvas.getContext("webgl", glo) || canvas.getContext("experimental-webgl", glo);
-} catch (e) { gl = null; }
-if (!gl) { document.getElementById("fallback").classList.add("show"); return; }
+var gpu = await starteWebGPU(canvas);
+if (!gpu) return;                                   // Rückfall läuft bereits
+var device = gpu.device, context = gpu.context, format = gpu.format;
+var verloren = false;
+device.lost.then(function () { verloren = true; }); // Schleife anhalten; den Hinweis zeigt starteWebGPU
 
-function shader(t, src, tag) {
-  var s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s);
-  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(tag + ": " + gl.getShaderInfoLog(s));
-  return s;
-}
-function program(vs, fs, tag) {
-  var p = gl.createProgram();
-  gl.attachShader(p, shader(gl.VERTEX_SHADER, vs, tag + " vs"));
-  gl.attachShader(p, shader(gl.FRAGMENT_SHADER, fs, tag + " fs"));
-  gl.linkProgram(p);
-  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(tag + " link: " + gl.getProgramInfoLog(p));
-  p.u = {}; p.a = {};
-  var n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS), i, d;
-  for (i = 0; i < n; i++) { d = gl.getActiveUniform(p, i); p.u[d.name] = gl.getUniformLocation(p, d.name); }
-  n = gl.getProgramParameter(p, gl.ACTIVE_ATTRIBUTES);
-  for (i = 0; i < n; i++) { d = gl.getActiveAttrib(p, i); p.a[d.name] = gl.getAttribLocation(p, d.name); }
-  p.U = function (k) { return p.u[k] === undefined ? null : p.u[k]; };
-  return p;
-}
-
-var VS_FACE = [
-"precision highp float;",
-"attribute vec3 aPos; attribute vec3 aNor; attribute float aSel;",
-"uniform mat4 uVP;",
-"varying vec3 vN; varying vec3 vP; varying float vS;",
-"void main(){ vN=aNor; vP=aPos; vS=aSel; gl_Position=uVP*vec4(aPos,1.0); }"
+/* --------------------------------------------------------- WGSL-Shader */
+// Uniform-Blöcke, von allen Pipelines geteilt. Byte-Offsets stehen als
+// Kommentar; schreibeUniforms() weiter unten benutzt genau diese Zahlen.
+// Frame wird einmal je Bild geschrieben, Draw hat je Zeichenaufruf einen
+// 256-Byte-Slot (dynamischer Offset) - das ersetzt die per-Draw-Uniforms
+// (uColor, uAlpha, uSize, uW) der WebGL-Fassung.
+var WGSL_COMMON = [
+"struct Frame {",
+"  vp   : mat4x4<f32>,   //   0  Projektion * Ansicht (Tiefe 0..1)",
+"  cam  : vec3<f32>,     //  64  Kameraposition",
+"  ldir : vec3<f32>,     //  80  Lichtrichtung",
+"  res  : vec2<f32>,     //  96  Canvas in Geraetepixeln",
+"  px   : vec2<f32>,     // 104  (cssW/2, cssH/2) fuer dicke Linien",
+"  top  : vec3<f32>,     // 112  Himmel oben",
+"  bot  : vec3<f32>,     // 128  Himmel unten",
+"  key  : vec3<f32>,     // 144  Hauptlicht",
+"  fill : vec3<f32>,     // 160  Fuelllicht",
+"  surf : vec3<f32>,     // 176  Vorderseite",
+"  back : vec3<f32>,     // 192  Rueckseite",
+"  sel  : vec3<f32>,     // 208  Auswahl            Groesse 224",
+"};",
+"struct Draw {",
+"  color  : vec3<f32>,   //   0  uColor",
+"  alpha  : f32,         //  12  uAlpha",
+"  color2 : vec3<f32>,   //  16  uSel bei Punkten",
+"  size   : f32,         //  28  Punktgroesse in Geraetepixeln",
+"  width  : f32,         //  32  Linienbreite in CSS-Pixeln   Groesse 48, Slot 256",
+"};",
+"@group(0) @binding(0) var<uniform> U : Frame;",
+"@group(0) @binding(1) var<uniform> D : Draw;",
+""
 ].join("\n");
 
-var FS_FACE = [
-"precision highp float;",
-"varying vec3 vN; varying vec3 vP; varying float vS;",
-"uniform vec3 uCam, uKey, uFill, uLdir, uSurf, uBack, uSel;",
-"void main(){",
-"  vec3 V = normalize(uCam - vP);",
-"  vec3 N = normalize(vN);",
+var WGSL_FACE = WGSL_COMMON + [
+"struct VOut {",
+"  @builtin(position) pos : vec4<f32>,",
+"  @location(0) n : vec3<f32>,",
+"  @location(1) p : vec3<f32>,",
+"  @location(2) s : f32,",
+"};",
+"@vertex fn vs(@location(0) aPos : vec3<f32>, @location(1) aNor : vec3<f32>, @location(2) aSel : f32) -> VOut {",
+"  var o : VOut;",
+"  o.n = aNor; o.p = aPos; o.s = aSel;",
+"  o.pos = U.vp * vec4<f32>(aPos, 1.0);",
+"  return o;",
+"}",
+"@fragment fn fs(v : VOut) -> @location(0) vec4<f32> {",
+"  let V = normalize(U.cam - v.p);",
+"  var N = normalize(v.n);",
 // backfaces are shown deliberately: an open or inverted face should be
 // obvious, not invisible
-"  bool front = dot(N, V) >= 0.0;",
-"  if (!front) N = -N;",
-"  vec3 L = normalize(uLdir), H = normalize(L + V);",
-"  float ndl = max(dot(N, L), 0.0);",
-"  vec3 base = front ? uSurf : uBack;",
-"  float back = max(dot(N, -L), 0.0);",
-"  vec3 c = base * (uFill * (0.58 + 0.42 * (0.5 + 0.5 * N.y))",
-"                 + uKey * ndl * 1.02 + uKey * back * 0.14);",
-"  c += uKey * pow(max(dot(N, H), 0.0), 38.0) * 0.30;",
+"  let front = dot(N, V) >= 0.0;",
+"  if (!front) { N = -N; }",
+"  let L = normalize(U.ldir);",
+"  let H = normalize(L + V);",
+"  let ndl = max(dot(N, L), 0.0);",
+"  let base = select(U.back, U.surf, front);",
+"  let bk = max(dot(N, -L), 0.0);",
+"  var c = base * (U.fill * (0.58 + 0.42 * (0.5 + 0.5 * N.y))",
+"                + U.key * ndl * 1.02 + U.key * bk * 0.14);",
+"  c = c + U.key * pow(max(dot(N, H), 0.0), 38.0) * 0.30;",
 // Selection is a readable state, not a pigment: blend it in AFTER lighting so
 // a face pointing away from the key light still reads as selected.
-"  c = mix(c, uSel * (0.58 + 0.55 * ndl), clamp(vS, 0.0, 1.0) * 0.82);",
-"  vec3 k = vec3(0.82); vec3 d = max(c - k, vec3(0.0));",
-"  gl_FragColor = vec4(min(c, k) + d / (1.0 + d / (1.0 - k)), 1.0);",
+"  c = mix(c, U.sel * (0.58 + 0.55 * ndl), clamp(v.s, 0.0, 1.0) * 0.82);",
+"  let k = vec3<f32>(0.82);",
+"  let d = max(c - k, vec3<f32>(0.0));",
+"  return vec4<f32>(min(c, k) + d / (1.0 + d / (1.0 - k)), 1.0);",
 "}"
 ].join("\n");
 
-var VS_LINE = [
-"precision highp float;",
-"attribute vec3 aPos;",
-"uniform mat4 uVP;",
-"void main(){ gl_Position = uVP * vec4(aPos, 1.0); }"
-].join("\n");
-
-var FS_FLAT = [
-"precision highp float;",
-"uniform vec3 uColor; uniform float uAlpha;",
-"void main(){ gl_FragColor = vec4(uColor, uAlpha); }"
+var WGSL_LINE = WGSL_COMMON + [
+"@vertex fn vs(@location(0) aPos : vec3<f32>) -> @builtin(position) vec4<f32> {",
+"  return U.vp * vec4<f32>(aPos, 1.0);",
+"}",
+"@fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(D.color, D.alpha); }"
 ].join("\n");
 
 /* screen-space thick lines: each segment is a quad expanded perpendicular to
-   itself after projection, because gl.lineWidth is clamped to 1 nearly
-   everywhere and a 1px selection is invisible on a retina phone */
-var VS_THICK = [
-"precision highp float;",
-"attribute vec3 aPos; attribute vec3 aOther; attribute float aSide;",
-"uniform mat4 uVP; uniform vec2 uPx; uniform float uW;",
-"void main(){",
-"  vec4 c0 = uVP * vec4(aPos, 1.0);",
-"  vec4 c1 = uVP * vec4(aOther, 1.0);",
-"  vec2 s0 = c0.xy / max(c0.w, 1e-5) * uPx;",
-"  vec2 s1 = c1.xy / max(c1.w, 1e-5) * uPx;",
-"  vec2 dir = s1 - s0;",
-"  float l = length(dir);",
-"  dir = (l > 1e-5) ? dir / l : vec2(1.0, 0.0);",
-"  vec2 nrm = vec2(-dir.y, dir.x) * (uW * 0.5) * aSide;",
-"  c0.xy += nrm / uPx * c0.w;",
-"  gl_Position = c0;",
+   itself after projection, because 1px lines are all WebGPU (and WebGL)
+   offer, and a 1px selection is invisible on a retina phone */
+var WGSL_THICK = WGSL_COMMON + [
+"@vertex fn vs(@location(0) aPos : vec3<f32>, @location(1) aOther : vec3<f32>, @location(2) aSide : f32) -> @builtin(position) vec4<f32> {",
+"  var c0 = U.vp * vec4<f32>(aPos, 1.0);",
+"  let c1 = U.vp * vec4<f32>(aOther, 1.0);",
+"  let s0 = c0.xy / max(c0.w, 1e-5) * U.px;",
+"  let s1 = c1.xy / max(c1.w, 1e-5) * U.px;",
+"  var dir = s1 - s0;",
+"  let l = length(dir);",
+"  dir = select(vec2<f32>(1.0, 0.0), dir / max(l, 1e-5), l > 1e-5);",
+"  let nrm = vec2<f32>(-dir.y, dir.x) * (D.width * 0.5) * aSide;",
+"  c0 = vec4<f32>(c0.xy + nrm / U.px * c0.w, c0.zw);",
+"  return c0;",
+"}",
+"@fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(D.color, D.alpha); }"
+].join("\n");
+
+/* WebGPU kennt keine Punktgröße: jeder Punkt ist eine Instanz aus 6 Ecken,
+   die im Vertex-Shader zu einem Bildschirm-Quad in Gerätepixeln aufgezogen
+   wird (wie gl_PointSize, Auswahl ×1,35). Der Fragment-Teil entspricht dem
+   alten gl_PointCoord-Kreis. */
+var WGSL_POINT = WGSL_COMMON + [
+"struct VOut {",
+"  @builtin(position) pos : vec4<f32>,",
+"  @location(0) uv : vec2<f32>,",
+"  @location(1) s : f32,",
+"};",
+"@vertex fn vs(@builtin(vertex_index) vi : u32, @location(0) aPos : vec3<f32>, @location(1) aSel : f32) -> VOut {",
+"  var corners = array<vec2<f32>, 6>(",
+"    vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),",
+"    vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0));",
+"  let c = corners[vi];",
+"  var p = U.vp * vec4<f32>(aPos, 1.0);",
+"  let size = D.size * select(1.0, 1.35, aSel > 0.5);",
+"  p = vec4<f32>(p.xy + c * (size / U.res) * p.w, p.zw);",
+"  var o : VOut;",
+"  o.pos = p; o.uv = c * 0.5 + 0.5; o.s = aSel;",
+"  return o;",
+"}",
+"@fragment fn fs(v : VOut) -> @location(0) vec4<f32> {",
+"  let d = v.uv - vec2<f32>(0.5);",
+"  let r = length(d);",
+"  if (r > 0.5) { discard; }",
+"  let c = mix(D.color, D.color2, step(0.5, v.s));",
+"  let edge = 1.0 - smoothstep(0.36, 0.5, r);",   // == smoothstep(0.5, 0.36, r) der GL-Fassung
+"  return vec4<f32>(mix(c * 0.35, c, edge), 1.0);",
 "}"
 ].join("\n");
 
-var VS_POINT = [
-"precision highp float;",
-"attribute vec3 aPos; attribute float aSel;",
-"uniform mat4 uVP; uniform float uSize;",
-"varying float vS;",
-"void main(){ vS = aSel; gl_Position = uVP * vec4(aPos, 1.0);",
-"  gl_PointSize = uSize * (aSel > 0.5 ? 1.35 : 1.0); }"
-].join("\n");
-
-var FS_POINT = [
-"precision highp float;",
-"varying float vS;",
-"uniform vec3 uColor, uSel;",
-"void main(){",
-"  vec2 d = gl_PointCoord - vec2(0.5);",
-"  float r = length(d);",
-"  if (r > 0.5) discard;",
-"  vec3 c = mix(uColor, uSel, step(0.5, vS));",
-"  float edge = smoothstep(0.5, 0.36, r);",
-"  gl_FragColor = vec4(mix(c * 0.35, c, edge), 1.0);",
+var WGSL_SKY = WGSL_COMMON + [
+"@vertex fn vs(@builtin(vertex_index) vi : u32) -> @builtin(position) vec4<f32> {",
+"  var tri = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));",
+"  return vec4<f32>(tri[vi], 0.0, 1.0);",
+"}",
+"@fragment fn fs(@builtin(position) pos : vec4<f32>) -> @location(0) vec4<f32> {",
+// position hat den Ursprung oben links, gl_FragCoord unten links: y spiegeln
+"  let uv = vec2<f32>(pos.x / U.res.x, 1.0 - pos.y / U.res.y);",
+"  var c = mix(U.bot, U.top, pow(clamp(uv.y, 0.0, 1.0), 0.9));",
+"  c = c * (1.0 - smoothstep(0.34, 1.0, distance(uv, vec2<f32>(0.5, 0.55))) * 0.34);",
+"  return vec4<f32>(c, 1.0);",
 "}"
 ].join("\n");
 
-var FS_SKY = [
-"precision highp float;",
-"uniform vec2 uRes; uniform vec3 uTop, uBot;",
-"void main(){",
-"  float y = gl_FragCoord.y / uRes.y;",
-"  vec3 c = mix(uBot, uTop, pow(clamp(y, 0.0, 1.0), 0.9));",
-"  c *= 1.0 - smoothstep(0.34, 1.0, distance(gl_FragCoord.xy/uRes, vec2(0.5,0.55))) * 0.34;",
-"  gl_FragColor = vec4(c, 1.0);",
-"}"
-].join("\n");
-
-var VS_FULL = ["precision highp float;", "attribute vec2 aPos;",
-  "void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }"].join("\n");
-
-var pFace, pLine, pThick, pPoint, pSky;
-try {
-  pFace  = program(VS_FACE, FS_FACE, "face");
-  pLine  = program(VS_LINE, FS_FLAT, "line");
-  pThick = program(VS_THICK, FS_FLAT, "thick");
-  pPoint = program(VS_POINT, FS_POINT, "point");
-  pSky   = program(VS_FULL, FS_SKY, "sky");
-} catch (err) {
-  document.getElementById("fallbackMsg").textContent = "Shader error: " + err.message;
-  document.getElementById("fallback").classList.add("show");
-  return;
+async function modul(code, tag) {
+  var m = device.createShaderModule({ label: tag, code: code });
+  var info = await m.getCompilationInfo();
+  for (var i = 0; i < info.messages.length; i++) {
+    var g = info.messages[i];
+    var text = "WGSL " + tag + " " + g.type + " " + g.lineNum + ":" + g.linePos + " " + g.message;
+    if (g.type === "error") console.error(text); else console.warn(text);
+  }
+  return m;
 }
 
-var quadBuf = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
-gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
-function buf() { return gl.createBuffer(); }
+/* ----------------------------------------------------------- Pipelines */
+device.pushErrorScope("validation");
+var mFace = await modul(WGSL_FACE, "face"), mLine = await modul(WGSL_LINE, "line"),
+    mThick = await modul(WGSL_THICK, "thick"), mPoint = await modul(WGSL_POINT, "point"),
+    mSky = await modul(WGSL_SKY, "sky");
+
+var bgl = device.createBindGroupLayout({ entries: [
+  { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+  { binding: 1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform", hasDynamicOffset: true } }
+] });
+var layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
+
+// Vertex-Puffer: getrennte Puffer je Attribut, wie in der WebGL-Fassung
+var VB3_0  = { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] };
+var VB3_1  = { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] };
+var VB1_2  = { arrayStride: 4,  attributes: [{ shaderLocation: 2, offset: 0, format: "float32" }] };
+var VBI3_0 = { arrayStride: 12, stepMode: "instance", attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] };
+var VBI1_1 = { arrayStride: 4,  stepMode: "instance", attributes: [{ shaderLocation: 1, offset: 0, format: "float32" }] };
+var BLEND_ALPHA = {                                  // gl.blendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA)
+  color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+  alpha: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" }
+};
+var DEPTH_ON   = { write: true,  cmp: "less" };      // DEPTH_TEST an, depthMask(true)
+var DEPTH_READ = { write: false, cmp: "less" };      // DEPTH_TEST an, depthMask(false)
+var DEPTH_OFF  = { write: false, cmp: "always" };    // gl.disable(DEPTH_TEST)
+
+function pipeline(tag, module, topology, buffers, depth, blend, offset) {
+  return device.createRenderPipeline({
+    label: tag, layout: layout,
+    vertex: { module: module, entryPoint: "vs", buffers: buffers },
+    fragment: { module: module, entryPoint: "fs", targets: [{ format: format, blend: blend || undefined }] },
+    primitive: { topology: topology, cullMode: "none" },          // Rückseiten bleiben sichtbar
+    depthStencil: { format: "depth24plus", depthWriteEnabled: depth.write, depthCompare: depth.cmp,
+                    depthBias: offset ? 1 : 0, depthBiasSlopeScale: offset ? 1 : 0 },  // polygonOffset(1,1)
+    multisample: { count: 4 }                                      // wie antialias:true
+  });
+}
+var pSky        = pipeline("sky",       mSky,   "triangle-list", [], DEPTH_OFF);
+var pGrid       = pipeline("grid",      mLine,  "line-list",     [VB3_0], DEPTH_READ, BLEND_ALPHA);
+var pFace       = pipeline("face",      mFace,  "triangle-list", [VB3_0, VB3_1, VB1_2], DEPTH_ON, null, true);
+var pWire       = pipeline("wire",      mLine,  "line-list",     [VB3_0], DEPTH_ON);
+var pThickDepth = pipeline("thick",     mThick, "triangle-list", [VB3_0, VB3_1, VB1_2], DEPTH_ON);
+var pThickTop   = pipeline("thick-top", mThick, "triangle-list", [VB3_0, VB3_1, VB1_2], DEPTH_OFF);
+var pPointDepth = pipeline("point",     mPoint, "triangle-list", [VBI3_0, VBI1_1], DEPTH_ON);
+var pPointTop   = pipeline("point-top", mPoint, "triangle-list", [VBI3_0, VBI1_1], DEPTH_OFF);
+
+var SLOTS = 11, SLOT_BYTES = 256;                    // 256 = minUniformBufferOffsetAlignment
+var frameBuf = device.createBuffer({ label: "frame", size: 256,
+                                     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+var drawBuf  = device.createBuffer({ label: "draw", size: SLOTS * SLOT_BYTES,
+                                     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+var bg = device.createBindGroup({ layout: bgl, entries: [
+  { binding: 0, resource: { buffer: frameBuf } },
+  { binding: 1, resource: { buffer: drawBuf, offset: 0, size: SLOT_BYTES } }
+] });
+
+var fehler = await device.popErrorScope();
+if (fehler) { console.error("WebGPU validation:", fehler.message); return rueckfall("validation error"); }
+
+/* -------------------------------------------------------- Vertex-Puffer */
+function GpuBuf() { this.buf = null; this.cap = 0; }
+function buf() { return new GpuBuf(); }
 var B = { fp: buf(), fn: buf(), fs: buf(), wp: buf(),
           tp: buf(), to: buf(), ts: buf(), pp: buf(), ps: buf(),
           gp: buf(), go: buf(), gs: buf(), hp: buf(), hs: buf() };
@@ -830,11 +933,18 @@ function selectionCount() {
   return app.mode === MODE.VERT ? app.selV.size
        : app.mode === MODE.EDGE ? app.selE.size : app.selF.size;
 }
-
 /* ------------------------------------------------------------- buffers */
+// Vertex-Puffer wachsen mit dem Netz (Extrude, Chamfer): reicht die Kapazität
+// nicht, wird ein größerer mit Reserve angelegt und der alte freigegeben.
+// Sonst nur writeBuffer - keine Neuanlage je Frame.
 function upload(b, arr) {
-  gl.bindBuffer(gl.ARRAY_BUFFER, b);
-  gl.bufferData(gl.ARRAY_BUFFER, arr, gl.DYNAMIC_DRAW);
+  var bytes = arr.byteLength;
+  if (!b.buf || bytes > b.cap) {
+    if (b.buf) b.buf.destroy();
+    b.cap = Math.max(256, Math.ceil(bytes * 1.5 / 4) * 4);
+    b.buf = device.createBuffer({ size: b.cap, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+  }
+  if (bytes) device.queue.writeBuffer(b.buf, 0, arr);
 }
 function pushThick(P, O, S, a, b) {          // one screen-space-thick segment
   var seq = [[a,b,1],[a,b,-1],[b,a,-1],[a,b,-1],[b,a,1],[b,a,-1]];
@@ -884,6 +994,17 @@ function rebuild() {
   upload(B.pp, new Float32Array(PP)); upload(B.ps, new Float32Array(PS));
 }
 
+// WebGPU-Clip-Raum: Tiefe 0…1 statt -1…1. Dritte Zeile der spaltenweise
+// gespeicherten Projektionsmatrix umrechnen, der Rest bleibt. x, y und w
+// ändern sich nicht, project() und pointerRay() bleiben deshalb unberührt.
+function gpuClip(p) {
+  p[2]  = 0.5 * p[2]  + 0.5 * p[3];
+  p[6]  = 0.5 * p[6]  + 0.5 * p[7];
+  p[10] = 0.5 * p[10] + 0.5 * p[11];
+  p[14] = 0.5 * p[14] + 0.5 * p[15];
+  return p;
+}
+
 /* -------------------------------------------------------------- camera */
 var FOV = 42 * Math.PI / 180;
 var cam = { yaw: -0.72, pitch: 0.46, dist: 6.4, target: [0, 0, 0],
@@ -901,6 +1022,7 @@ function updateCamera() {
   cam.up = cross(cam.right, cam.fwd);
   lookAt(view, cam.pos, cam.target);
   perspective(proj, FOV, cssW / cssH, 0.05, 200);
+  gpuClip(proj);                                          // Tiefe 0…1 (WebGPU)
   mul(vp, proj, view);
 }
 
@@ -1116,7 +1238,7 @@ function dragGizmo(px, py) {
 }
 
 /* ---------------------------------------------------------------- draw */
-var gridBuf = gl.createBuffer(), gridN = 0;
+var gridB = buf(), gridN = 0;
 (function buildGrid() {
   var G = [], n = 6, s = 1;
   for (var i = -n; i <= n; i++) {
@@ -1124,37 +1246,67 @@ var gridBuf = gl.createBuffer(), gridN = 0;
     G.push(-n*s, 0, i*s, n*s, 0, i*s);
   }
   gridN = G.length / 3;
-  gl.bindBuffer(gl.ARRAY_BUFFER, gridBuf);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(G), gl.STATIC_DRAW);
+  upload(gridB, new Float32Array(G));
 })();
 
-function attrib(p, name, b, size) {
-  var loc = p.a[name];
-  if (loc === undefined || loc < 0) return;
-  gl.bindBuffer(gl.ARRAY_BUFFER, b);
-  gl.enableVertexAttribArray(loc);
-  gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0);
-}
-function drawThick(P, O, S, count, color, width) {
-  if (!count) return;
-  gl.useProgram(pThick);
-  gl.uniformMatrix4fv(pThick.U("uVP"), false, vp);
-  gl.uniform2f(pThick.U("uPx"), cssW * 0.5, cssH * 0.5);
-  gl.uniform1f(pThick.U("uW"), width);
-  gl.uniform3fv(pThick.U("uColor"), color);
-  gl.uniform1f(pThick.U("uAlpha"), 1.0);
-  attrib(pThick, "aPos", P, 3); attrib(pThick, "aOther", O, 3); attrib(pThick, "aSide", S, 1);
-  gl.drawArrays(gl.TRIANGLES, 0, count);
+// MSAA-Farbziel und Tiefe in Canvas-Größe; bei Größenänderung neu anlegen,
+// die alten freigeben. Der Canvas selbst braucht kein configure() mehr.
+var msaaTex = null, depthTex = null, msaaView = null, depthView = null, texW = 0, texH = 0;
+function ensureTargets() {
+  if (msaaTex && texW === W && texH === H) return;
+  if (msaaTex) msaaTex.destroy();
+  if (depthTex) depthTex.destroy();
+  msaaTex = device.createTexture({ label: "msaa", size: [W, H], sampleCount: 4, format: format,
+                                   usage: GPUTextureUsage.RENDER_ATTACHMENT });
+  depthTex = device.createTexture({ label: "depth", size: [W, H], sampleCount: 4, format: "depth24plus",
+                                    usage: GPUTextureUsage.RENDER_ATTACHMENT });
+  msaaView = msaaTex.createView(); depthView = depthTex.createView();
+  texW = W; texH = H;
 }
 
-var GP = [], GO = [], GS = [], HP = [], HS = [];
-function drawGizmo() {
+// Uniform-Daten auf der CPU: Frame (256 Byte) und die Draw-Slots (je 256 Byte),
+// Offsets wie im WGSL-Kommentar (Float-Index = Byte / 4).
+var FU = new Float32Array(64), DU = new Float32Array(SLOTS * 64);
+var SLOT = { GRID: 0, WIRE: 1, THICK: 2, GIZ: 3, POINT: 6, HANDLE: 7, CENTRE: 10 };
+function put3(a, o, v) { a[o] = v[0]; a[o + 1] = v[1]; a[o + 2] = v[2]; }
+function slot(i, color, alpha, color2, size, width) {
+  var o = i * 64;
+  put3(DU, o, color); DU[o + 3] = alpha;
+  put3(DU, o + 4, color2); DU[o + 7] = size; DU[o + 8] = width;
+}
+function schreibeUniforms() {
+  FU.set(vp, 0);
+  put3(FU, 16, cam.pos);
+  var L = norm(add(add(scale(cam.right, -0.42), scale(cam.up, 0.74)), scale(cam.fwd, -0.52)));
+  put3(FU, 20, L);
+  FU[24] = W; FU[25] = H; FU[26] = cssW * 0.5; FU[27] = cssH * 0.5;
+  put3(FU, 28, PAL.top);  put3(FU, 32, PAL.bot);  put3(FU, 36, PAL.key); put3(FU, 40, PAL.fill);
+  put3(FU, 44, PAL.surf); put3(FU, 48, PAL.back); put3(FU, 52, PAL.sel);
+  device.queue.writeBuffer(frameBuf, 0, FU);
+
+  slot(SLOT.GRID,  PAL.wire, 0.34, PAL.wire, 0, 0);
+  slot(SLOT.WIRE,  PAL.wire, 1.0,  PAL.wire, 0, 0);
+  slot(SLOT.THICK, PAL.sel,  1.0,  PAL.sel,  0, 5.5 * 1);
+  for (var a = 0; a < 3; a++) {
+    slot(SLOT.GIZ + a,    PAL.axis[a], 1.0, PAL.axis[a], 0, giz.axis === a ? 6.5 : 4);
+    slot(SLOT.HANDLE + a, PAL.axis[a], 1.0, PAL.axis[a], 15 * dpr, 0);
+  }
+  slot(SLOT.POINT,  PAL.pt,     1.0, PAL.sel,    8 * dpr,  0);
+  slot(SLOT.CENTRE, PAL.selHot, 1.0, PAL.selHot, 13 * dpr, 0);
+  device.queue.writeBuffer(drawBuf, 0, DU);
+}
+function bind(pass, s) { pass.setBindGroup(0, bg, [s * SLOT_BYTES]); }
+
+var GP = [], GO = [], GS = [], HP = [], HS = [], GR = [0, 0, 0, 0];
+function drawGizmo(pass) {
   var pivot = selectionCentroid();
   if (!pivot || !gizmoVisible()) return;
   var L = gizmoLen(pivot), a, s;
-  gl.disable(gl.DEPTH_TEST);
+  // Alle drei Achsen in einen Puffer, je Achse ein Bereich: writeBuffer wirkt
+  // erst beim submit, ein gemeinsamer Puffer je Achse und Draw ginge schief.
+  GP.length = 0; GO.length = 0; GS.length = 0;
   for (a = 0; a < 3; a++) {
-    GP.length = 0; GO.length = 0; GS.length = 0;
+    GR[a] = GS.length;
     if (app.tool === TOOL.ROTATE) {
       var b = axisBasis(a), prev = null;
       for (s = 0; s <= 48; s++) {
@@ -1166,9 +1318,16 @@ function drawGizmo() {
     } else {
       pushThick(GP, GO, GS, pivot, add(pivot, scale(AX[a], L)));
     }
-    upload(B.gp, new Float32Array(GP)); upload(B.go, new Float32Array(GO));
-    upload(B.gs, new Float32Array(GS));
-    drawThick(B.gp, B.go, B.gs, GS.length, PAL.axis[a], giz.axis === a ? 6.5 : 4);
+  }
+  GR[3] = GS.length;
+  upload(B.gp, new Float32Array(GP)); upload(B.go, new Float32Array(GO));
+  upload(B.gs, new Float32Array(GS));
+  pass.setPipeline(pThickTop);                     // ohne Tiefentest, wie gl.disable(DEPTH_TEST)
+  pass.setVertexBuffer(0, B.gp.buf); pass.setVertexBuffer(1, B.go.buf); pass.setVertexBuffer(2, B.gs.buf);
+  for (a = 0; a < 3; a++) {
+    if (GR[a + 1] === GR[a]) continue;
+    bind(pass, SLOT.GIZ + a);
+    pass.draw(GR[a + 1] - GR[a], 1, GR[a], 0);
   }
   if (app.tool !== TOOL.ROTATE) {
     HP.length = 0; HS.length = 0;
@@ -1178,76 +1337,66 @@ function drawGizmo() {
     }
     HP.push(pivot[0], pivot[1], pivot[2]); HS.push(1);
     upload(B.hp, new Float32Array(HP)); upload(B.hs, new Float32Array(HS));
+    pass.setPipeline(pPointTop);
+    pass.setVertexBuffer(0, B.hp.buf); pass.setVertexBuffer(1, B.hs.buf);
     for (a = 0; a < 4; a++) {
-      gl.useProgram(pPoint);
-      gl.uniformMatrix4fv(pPoint.U("uVP"), false, vp);
-      gl.uniform1f(pPoint.U("uSize"), (a === 3 ? 13 : 15) * dpr);
-      gl.uniform3fv(pPoint.U("uColor"), a === 3 ? PAL.selHot : PAL.axis[a]);
-      gl.uniform3fv(pPoint.U("uSel"), a === 3 ? PAL.selHot : PAL.axis[a]);
-      attrib(pPoint, "aPos", B.hp, 3); attrib(pPoint, "aSel", B.hs, 1);
-      gl.drawArrays(gl.POINTS, a, 1);
+      bind(pass, a === 3 ? SLOT.CENTRE : SLOT.HANDLE + a);
+      pass.draw(6, 1, 0, a);                       // Instanz a = Griff a
     }
   }
-  gl.enable(gl.DEPTH_TEST);
 }
 
 function draw() {
-  gl.viewport(0, 0, W, H);
-  gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.disable(gl.CULL_FACE);
-  gl.depthMask(false);
-  gl.useProgram(pSky);
-  attrib(pSky, "aPos", quadBuf, 2);
-  gl.uniform2f(pSky.U("uRes"), W, H);
-  gl.uniform3fv(pSky.U("uTop"), PAL.top); gl.uniform3fv(pSky.U("uBot"), PAL.bot);
-  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  ensureTargets();
+  schreibeUniforms();
+  var enc = device.createCommandEncoder();
+  var pass = enc.beginRenderPass({
+    colorAttachments: [{ view: msaaView, resolveTarget: context.getCurrentTexture().createView(),
+                         loadOp: "clear", clearValue: { r: 0, g: 0, b: 0, a: 1 }, storeOp: "discard" }],
+    depthStencilAttachment: { view: depthView, depthLoadOp: "clear", depthClearValue: 1.0, depthStoreOp: "discard" }
+  });
 
-  gl.depthMask(true); gl.clear(gl.DEPTH_BUFFER_BIT); gl.enable(gl.DEPTH_TEST);
+  // Himmel: Vollbild-Dreieck, kein Tiefentest, kein Tiefenschreiben
+  bind(pass, SLOT.GRID);
+  pass.setPipeline(pSky);
+  pass.draw(3);
 
   // The grid plane cuts straight through a box centred on the origin, so it
   // must not write depth - otherwise it punches holes in the model's lower half.
-  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-  gl.depthMask(false);
-  gl.useProgram(pLine);
-  gl.uniformMatrix4fv(pLine.U("uVP"), false, vp);
-  gl.uniform3fv(pLine.U("uColor"), PAL.wire);
-  gl.uniform1f(pLine.U("uAlpha"), 0.34);
-  attrib(pLine, "aPos", gridBuf, 3);
-  gl.drawArrays(gl.LINES, 0, gridN);
-  gl.depthMask(true);
-  gl.disable(gl.BLEND);
+  pass.setPipeline(pGrid);
+  pass.setVertexBuffer(0, gridB.buf);
+  pass.draw(gridN);
 
   // push fills back so the wireframe lands cleanly on the surface
-  gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1.0, 1.0);
-  gl.useProgram(pFace);
-  gl.uniformMatrix4fv(pFace.U("uVP"), false, vp);
-  gl.uniform3f(pFace.U("uCam"), cam.pos[0], cam.pos[1], cam.pos[2]);
-  gl.uniform3fv(pFace.U("uKey"), PAL.key);   gl.uniform3fv(pFace.U("uFill"), PAL.fill);
-  gl.uniform3fv(pFace.U("uSurf"), PAL.surf); gl.uniform3fv(pFace.U("uBack"), PAL.back);
-  gl.uniform3fv(pFace.U("uSel"), PAL.sel);
-  var L = norm(add(add(scale(cam.right, -0.42), scale(cam.up, 0.74)), scale(cam.fwd, -0.52)));
-  gl.uniform3f(pFace.U("uLdir"), L[0], L[1], L[2]);
-  attrib(pFace, "aPos", B.fp, 3); attrib(pFace, "aNor", B.fn, 3); attrib(pFace, "aSel", B.fs, 1);
-  gl.drawArrays(gl.TRIANGLES, 0, N.face);
-  gl.disable(gl.POLYGON_OFFSET_FILL);
-
-  gl.useProgram(pLine);
-  gl.uniformMatrix4fv(pLine.U("uVP"), false, vp);
-  gl.uniform3fv(pLine.U("uColor"), PAL.wire);
-  gl.uniform1f(pLine.U("uAlpha"), 1.0);
-  attrib(pLine, "aPos", B.wp, 3);
-  gl.drawArrays(gl.LINES, 0, N.wire);
-
-  if (app.mode === MODE.EDGE) drawThick(B.tp, B.to, B.ts, N.thick, PAL.sel, 5.5 * 1);
-  if (app.mode === MODE.VERT) {
-    gl.useProgram(pPoint);
-    gl.uniformMatrix4fv(pPoint.U("uVP"), false, vp);
-    gl.uniform1f(pPoint.U("uSize"), 8 * dpr);
-    gl.uniform3fv(pPoint.U("uColor"), PAL.pt);
-    gl.uniform3fv(pPoint.U("uSel"), PAL.sel);
-    attrib(pPoint, "aPos", B.pp, 3); attrib(pPoint, "aSel", B.ps, 1);
-    gl.drawArrays(gl.POINTS, 0, N.point);
+  // (depthBias 1 / slope 1 in der Pipeline, wie polygonOffset(1,1))
+  if (N.face) {
+    pass.setPipeline(pFace);
+    pass.setVertexBuffer(0, B.fp.buf); pass.setVertexBuffer(1, B.fn.buf); pass.setVertexBuffer(2, B.fs.buf);
+    pass.draw(N.face);
   }
-  drawGizmo();
+
+  if (N.wire) {
+    pass.setPipeline(pWire);
+    bind(pass, SLOT.WIRE);
+    pass.setVertexBuffer(0, B.wp.buf);
+    pass.draw(N.wire);
+  }
+
+  if (app.mode === MODE.EDGE && N.thick) {
+    pass.setPipeline(pThickDepth);
+    bind(pass, SLOT.THICK);
+    pass.setVertexBuffer(0, B.tp.buf); pass.setVertexBuffer(1, B.to.buf); pass.setVertexBuffer(2, B.ts.buf);
+    pass.draw(N.thick);
+  }
+  if (app.mode === MODE.VERT && N.point) {
+    pass.setPipeline(pPointDepth);
+    bind(pass, SLOT.POINT);
+    pass.setVertexBuffer(0, B.pp.buf); pass.setVertexBuffer(1, B.ps.buf);
+    pass.draw(6, N.point);                         // 6 Ecken je Punkt, ein Punkt je Instanz
+  }
+  drawGizmo(pass);
+  pass.end();
+  device.queue.submit([enc.finish()]);
 }
 
 /* ------------------------------------------------------------ operations */
@@ -1454,6 +1603,7 @@ function refresh() {
 /* ------------------------------------------------------------------ loop */
 function tick() {
   requestAnimationFrame(tick);
+  if (verloren) return;                            // nach Geräteverlust nichts mehr zeichnen
   draw();
 }
 window.addEventListener("resize", resize);
@@ -1463,8 +1613,11 @@ resize();
 refresh();
 requestAnimationFrame(tick);
 
-})();
+})().catch(function (e) {
+  // Fehler beim Start (nicht zur Laufzeit): melden und die WebGL-Fassung laden
+  console.error("WebGPU init failed:", e);
+  rueckfall("init error");
+});
 </script>
-<!--CONTENT-END-->
-</body>
-</html>
+
+</body></html>

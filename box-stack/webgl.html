@@ -1,0 +1,250 @@
+<!doctype html><html lang="en" data-theme="dark"><head><meta charset=utf-8>
+<title>Box Stack</title><meta name=viewport content="width=device-width,initial-scale=1"></head><body>
+
+<link rel="stylesheet" href="../fonts/fonts.css">
+<style>
+/* ---- tokens: same instrument language as the other demos ---- */
+:root{
+  --ink:#E9EEF0; --ink2:#DCE4E8;
+  --panel:rgba(255,255,255,.80); --panel-solid:#FFFFFF;
+  --line:rgba(24,44,56,.16); --line-strong:rgba(24,44,56,.30);
+  --text:#16212A; --muted:#5A6D79;
+  --brass:#9C6410; --brass-bright:#C2820F;
+  --shadow:0 1px 2px rgba(16,32,40,.10), 0 8px 24px rgba(16,32,40,.10);
+  --scene-top:#EDF2F4; --scene-bot:#AEC0C9;
+  --ground:#CFDBE0; --shade:#3C4E58;
+  --key:#FFF0DC; --fill:#8FAABA;
+  --box-a:#D0942E; --box-b:#E8DCC4; --box-c:#4A6474; --box-d:#B85A2B; --box-e:#2A3A46;
+  --ball:#D9DEE3;
+}
+:root:not([data-theme="light"]){ color-scheme:light; }
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --ink:#0E1317; --ink2:#080C0F;
+    --panel:rgba(21,29,35,.78); --panel-solid:#151D23;
+    --line:rgba(154,190,206,.16); --line-strong:rgba(154,190,206,.30);
+    --text:#DDE7EC; --muted:#7B8D99;
+    --brass:#E3A33C; --brass-bright:#F6BE5E;
+    --shadow:0 1px 2px rgba(0,0,0,.35), 0 10px 30px rgba(0,0,0,.42);
+    --scene-top:#18232B; --scene-bot:#070A0D;
+    --ground:#20303A; --shade:#03070A;
+    --key:#FFEBCB; --fill:#2C4557;
+    --box-a:#E3A33C; --box-b:#E8DCC4; --box-c:#4A6474; --box-d:#B85A2B; --box-e:#2A3A46;
+    --ball:#D9DEE3;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --ink:#0E1317; --ink2:#080C0F;
+  --panel:rgba(21,29,35,.78); --panel-solid:#151D23;
+  --line:rgba(154,190,206,.16); --line-strong:rgba(154,190,206,.30);
+  --text:#DDE7EC; --muted:#7B8D99;
+  --brass:#E3A33C; --brass-bright:#F6BE5E;
+  --shadow:0 1px 2px rgba(0,0,0,.35), 0 10px 30px rgba(0,0,0,.42);
+  --scene-top:#18232B; --scene-bot:#070A0D;
+  --ground:#20303A; --shade:#03070A;
+  --key:#FFEBCB; --fill:#2C4557;
+  --box-a:#E3A33C; --box-b:#E8DCC4; --box-c:#4A6474; --box-d:#B85A2B; --box-e:#2A3A46;
+  --ball:#D9DEE3;
+}
+
+*{box-sizing:border-box;}
+html,body{height:100%;margin:0;padding:0;}
+body{
+  background:var(--ink); color:var(--text);
+  font-family:"Barlow Semi Condensed", "Helvetica Neue", Arial, sans-serif;
+  overflow:hidden; overscroll-behavior:none;
+  -webkit-user-select:none; user-select:none; -webkit-touch-callout:none;
+  -webkit-tap-highlight-color:transparent; touch-action:none;
+}
+#stage{position:fixed; inset:0; touch-action:none;}
+#gl{display:block; width:100%; height:100%; touch-action:none; cursor:grab;}
+#gl.dragging{cursor:grabbing;}
+
+.hud{
+  position:fixed; z-index:2; pointer-events:none;
+  padding:max(14px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right))
+          max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+}
+.hud.tl{top:0; left:0;}
+.hud.tr{top:0; right:0; text-align:right;}
+.hud.bc{left:0; right:0; bottom:0; display:flex; flex-direction:column; align-items:center; gap:10px;}
+
+.plate{ display:flex; flex-direction:column; gap:2px; max-width:300px; }
+.plate h1{ margin:0; font-size:15px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; color:var(--text); }
+.plate .rule{ width:34px; height:2px; background:var(--brass); margin:5px 0 3px; }
+.plate p{ margin:0; font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size:10px; letter-spacing:.06em; color:var(--muted); text-transform:uppercase; line-height:1.55; }
+
+.telemetry{
+  display:inline-grid; grid-template-columns:auto auto; gap:1px 12px;
+  font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size:10.5px; font-variant-numeric:tabular-nums; text-align:right;
+}
+.telemetry dt{ color:var(--muted); letter-spacing:.08em; text-transform:uppercase; }
+.telemetry dd{ margin:0; color:var(--text); }
+.telemetry dd.hot{ color:var(--brass-bright); }
+
+.bar{
+  pointer-events:auto; display:flex; align-items:center; gap:6px; flex-wrap:wrap; justify-content:center;
+  padding:5px; border-radius:12px; background:var(--panel); border:1px solid var(--line);
+  box-shadow:var(--shadow);
+  -webkit-backdrop-filter:blur(14px) saturate(1.3); backdrop-filter:blur(14px) saturate(1.3);
+}
+button{
+  font-family:inherit; font-size:12px; font-weight:600; letter-spacing:.12em; text-transform:uppercase;
+  color:var(--text); background:transparent; border:1px solid transparent; border-radius:8px;
+  padding:9px 15px; min-height:38px; cursor:pointer;
+  transition:background .15s ease, border-color .15s ease, color .15s ease;
+}
+button:hover{ background:var(--line); }
+button:active{ background:var(--line-strong); }
+button[aria-pressed="true"]{ color:var(--brass-bright); border-color:var(--line-strong); background:var(--line); }
+button:focus-visible{ outline:2px solid var(--brass); outline-offset:2px; }
+button.primary{ color:var(--brass-bright); }
+
+.tuner{
+  pointer-events:auto; width:min(420px, calc(100vw - 28px)); max-height:min(62vh, 520px); overflow:auto;
+  display:none; grid-template-columns:1fr 1fr; gap:9px 18px;
+  padding:14px 15px; border-radius:12px;
+  background:var(--panel); border:1px solid var(--line); box-shadow:var(--shadow);
+  -webkit-backdrop-filter:blur(14px) saturate(1.3); backdrop-filter:blur(14px) saturate(1.3);
+}
+.tuner.open{ display:grid; }
+.tuner h2{
+  grid-column:1 / -1; margin:6px 0 0; font-size:10px; font-weight:600; letter-spacing:.16em;
+  text-transform:uppercase; color:var(--brass);
+}
+.tuner h2:first-child{ margin-top:0; }
+.row{ display:grid; grid-template-columns:1fr auto; align-items:baseline; gap:0 10px; }
+.row label{ font-size:11px; font-weight:500; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); }
+.row output{ font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace; font-size:11px;
+  font-variant-numeric:tabular-nums; color:var(--text); }
+.row input{ grid-column:1 / -1; }
+
+input[type=range]{ -webkit-appearance:none; appearance:none; width:100%; height:22px; margin:0;
+  background:transparent; cursor:pointer; }
+input[type=range]::-webkit-slider-runnable-track{ height:2px; border-radius:1px; background:var(--line-strong); }
+input[type=range]::-webkit-slider-thumb{ -webkit-appearance:none; appearance:none; width:18px; height:18px;
+  margin-top:-8px; border-radius:50%; background:var(--brass); border:2px solid var(--panel-solid);
+  box-shadow:0 1px 3px rgba(0,0,0,.4); }
+input[type=range]::-moz-range-track{ height:2px; border-radius:1px; background:var(--line-strong); border:none; }
+input[type=range]::-moz-range-thumb{ width:16px; height:16px; border-radius:50%; background:var(--brass);
+  border:2px solid var(--panel-solid); }
+input[type=range]:focus-visible{ outline:2px solid var(--brass); outline-offset:4px; border-radius:4px; }
+
+.hint{ font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace; font-size:10.5px; letter-spacing:.06em;
+  text-transform:uppercase; color:var(--muted); text-align:center; transition:opacity .5s ease; }
+.hint .k{ display:inline-block; padding:1px 5px; border:1px solid var(--line-strong); border-radius:4px; color:var(--text); }
+
+#fallback{ position:fixed; inset:0; z-index:5; display:none; place-content:center; padding:32px;
+  text-align:center; background:var(--ink); color:var(--text); }
+#fallback.show{ display:grid; }
+#fallback p{ max-width:34ch; margin:0 auto; line-height:1.6; color:var(--muted); font-size:15px; }
+#fallback strong{ display:block; margin-bottom:10px; color:var(--text); font-size:15px; font-weight:600;
+  letter-spacing:.14em; text-transform:uppercase; }
+
+
+/* ---- Kompaktstufe: Handy und Einbettung im Rahmen. Nur kleine Fenster,
+   der Desktop bleibt wie er ist. ---- */
+@media (max-width: 640px), (max-height: 460px){
+  .plate p, .telemetry, .hint{ display:none; }
+  .plate h1{ font-size:12px; }
+  .plate .rule{ display:none; }
+  .hud{ padding:8px; }
+  .hud.bc{ gap:6px; }
+  .bar{ padding:3px; gap:3px; }
+  button{ font-size:10px; padding:6px 9px; min-height:30px; letter-spacing:.08em; }
+  .tuner{ max-height:min(52vh, 320px); padding:9px 10px; gap:5px 12px; }
+  .row label, .row output{ font-size:10px; }
+  input[type=range]{ height:18px; }
+}
+@media (max-width:640px){
+  .plate p{ display:none; }
+  .tuner{ grid-template-columns:1fr; }
+}
+@media (prefers-reduced-motion: reduce){ *{ transition-duration:.01ms !important; } }
+</style>
+
+<div id="stage"><canvas id="gl" aria-label="Rigid-body simulation: a grid of stacked boxes, knocked over by a ball"></canvas></div>
+
+<div class="hud tl">
+  <div class="plate">
+    <h1>Box Stack</h1>
+    <div class="rule"></div>
+    <p>Rigid bodies in 3D &mdash; separating-axis test with a four-point contact manifold,
+       sequential impulses with Coulomb friction and warm starting, sleeping. Drag to orbit,
+       fire the ball, watch it fall.</p>
+  </div>
+</div>
+
+<div class="hud tr">
+  <dl class="telemetry">
+    <dt>Bodies</dt><dd id="tBodies">0</dd>
+    <dt>Awake</dt><dd id="tAwake">0</dd>
+    <dt>Contacts</dt><dd id="tContacts">0</dd>
+    <dt>Step</dt><dd id="tStep">0.0 ms</dd>
+    <dt>Frame</dt><dd id="tFps">60 fps</dd>
+  </dl>
+</div>
+
+<div class="hud bc">
+  <p class="hint" id="hint"><span class="k">Space</span> fire &middot; <span class="k">R</span> rebuild &middot; <span class="k">P</span> pause &middot; drag to orbit &middot; wheel to zoom</p>
+  <div class="tuner" id="tuner">
+    <h2>Stack &middot; applies on rebuild</h2>
+    <div class="row"><label for="sCols">Columns</label><output id="oCols">6</output>
+      <input id="sCols" type="range" min="1" max="12" step="1" value="6"></div>
+    <div class="row"><label for="sRows">Rows</label><output id="oRows">2</output>
+      <input id="sRows" type="range" min="1" max="6" step="1" value="2"></div>
+    <div class="row"><label for="sLayers">Layers</label><output id="oLayers">8</output>
+      <input id="sLayers" type="range" min="1" max="16" step="1" value="8"></div>
+    <div class="row"><label for="sSize">Box size</label><output id="oSize">0.40 m</output>
+      <input id="sSize" type="range" min="0.2" max="0.8" step="0.02" value="0.4"></div>
+    <div class="row"><label for="sGap">Gap</label><output id="oGap">0.00 m</output>
+      <input id="sGap" type="range" min="0" max="0.12" step="0.005" value="0"></div>
+    <div class="row"><label for="sMass">Box mass</label><output id="oMass">2.0 kg</output>
+      <input id="sMass" type="range" min="0.5" max="10" step="0.5" value="2"></div>
+    <h2>World &middot; live</h2>
+    <div class="row"><label for="sG">Gravity</label><output id="oG">9.8 m/s&sup2;</output>
+      <input id="sG" type="range" min="0" max="25" step="0.2" value="9.8"></div>
+    <div class="row"><label for="sMu">Friction</label><output id="oMu">0.55</output>
+      <input id="sMu" type="range" min="0" max="1" step="0.01" value="0.55"></div>
+    <div class="row"><label for="sE">Bounce</label><output id="oE">0.10</output>
+      <input id="sE" type="range" min="0" max="0.6" step="0.01" value="0.1"></div>
+    <div class="row"><label for="sIt">Solver iterations</label><output id="oIt">10</output>
+      <input id="sIt" type="range" min="4" max="24" step="1" value="10"></div>
+    <h2>Ball</h2>
+    <div class="row"><label for="sBM">Ball mass</label><output id="oBM">20 kg</output>
+      <input id="sBM" type="range" min="1" max="60" step="1" value="20"></div>
+    <div class="row"><label for="sBV">Ball speed</label><output id="oBV">14 m/s</output>
+      <input id="sBV" type="range" min="2" max="40" step="1" value="14"></div>
+  </div>
+  <div class="bar">
+    <button id="bFire" type="button" class="primary">Fire</button>
+    <button id="bPush" type="button">Push</button>
+    <button id="bBuild" type="button">Rebuild</button>
+    <button id="bPause" type="button" aria-pressed="false">Pause</button>
+    <button id="bTune" type="button" aria-pressed="false" aria-controls="tuner">Tune</button>
+  </div>
+</div>
+
+<div id="fallback">
+  <div>
+    <strong>Box Stack</strong>
+    <p id="fallbackMsg">This browser could not start a WebGL context. Try Safari or Chrome with hardware acceleration enabled.</p>
+  </div>
+</div>
+
+<script src="rbd.js?v=4"></script>
+<script src="stapel.js?v=4"></script>
+<script>
+if (location.hash.indexOf("#fallback") === 0) {
+	var b = document.createElement("div");
+	var grund = decodeURIComponent(location.hash.replace(/^#fallback=?/, ""));
+	b.textContent = "WebGL fallback \u2014 " + (grund ? grund : "this browser has no WebGPU");
+	b.style.cssText = "position:fixed;left:50%;top:8px;transform:translateX(-50%);font:11px/1.4 ui-monospace,Menlo,monospace;color:#b8b9bf;background:rgba(0,0,0,.55);padding:4px 10px;border-radius:999px;z-index:99;pointer-events:none;letter-spacing:.06em;white-space:nowrap;";
+	document.body.appendChild(b);
+}
+</script>
+</body></html>

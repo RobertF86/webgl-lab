@@ -1,9 +1,14 @@
 # Poly Bench
 
-A small editable-poly modeller in WebGL. Start from a box, select vertices,
-edges or faces, move/rotate/scale them, extrude and chamfer.
+A small editable-poly modeller in the browser. Start from a box, select
+vertices, edges or faces, move/rotate/scale them, extrude and chamfer.
 
-Single self-contained `index.html` — raw WebGL 1.0, no libraries, no build step.
+No libraries, no build step. `index.html` renders with raw WebGPU; `webgl.html`
+is the WebGL 1.0 version the demo started as, loaded automatically when WebGPU
+is not available. Both are single files with the same mesh core and interface; the
+fonts come from `../fonts/`. WebGPU has no per-draw uniform calls and no point
+size, so the WebGPU version gives each draw a 256-byte uniform slot at a dynamic
+offset and draws vertex points as instanced screen-space quads.
 
 ## Controls
 
@@ -64,9 +69,10 @@ node tests/mesh.test.js
 ```
 
 The test extracts the core straight out of `index.html` between the
-`<mesh-core>` markers, so there is exactly one copy of the code. It checks Euler
-characteristic, closed-manifoldness, outward normals, signed volume and exact
-face counts:
+`<mesh-core>` markers, so the tested code is the code that runs. `webgl.html`
+carries an identical copy of that block; change both together. The test checks
+Euler characteristic, closed-manifoldness, outward normals, signed volume and
+exact face counts:
 
 | case | result |
 | --- | --- |

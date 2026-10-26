@@ -1,0 +1,157 @@
+/* Eigenstaendig: die Demo laeuft im iframe und teilt sich nichts mit WordPress.
+   Farben aus dem fridayvfx-Design: #252937 Grundton, #81E458 Akzent. */
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; padding: 0; }
+
+/* Muss ganz nach oben: Elemente hier bekommen spaeter display:flex, und
+   Autoren-CSS schlaegt die Browser-Voreinstellung fuer das hidden-Attribut.
+   Ohne diese Zeile ueberdeckt der WebGL-Hinweis (inset:0) die ganze Demo,
+   und die Beruehrungsknoepfe erscheinen auch am Schreibtisch. */
+[hidden] { display: none !important; }
+
+body {
+	background: #0A0D14;
+	color: #DCE2E6;
+	font: 13px/1.5 "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	overflow: hidden;
+	overscroll-behavior: none;
+	-webkit-user-select: none;
+	user-select: none;
+	-webkit-tap-highlight-color: transparent;
+}
+
+#stage { position: fixed; inset: 0; touch-action: none; }
+#gl { display: block; width: 100%; height: 100%; touch-action: none; }
+
+/* --- Infotafel oben links, wie bei den anderen Demos --- */
+.plate {
+	position: fixed;
+	z-index: 2;
+	pointer-events: none;
+	top: max(14px, env(safe-area-inset-top));
+	left: max(14px, env(safe-area-inset-left));
+	max-width: min(46ch, calc(100vw - 28px));
+	padding: 12px 15px 11px;
+	background: rgba(12, 16, 24, .88);
+	border: 1px solid rgba(140, 180, 200, .14);
+	border-radius: 3px;
+	box-shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 14px 40px rgba(0, 0, 0, .5);
+	backdrop-filter: blur(6px);
+}
+
+.plate h1 {
+	margin: 0 0 5px;
+	font-size: 15px;
+	letter-spacing: .04em;
+	color: #FFFFFF;
+	font-weight: 600;
+}
+.plate h1::after {
+	content: "";
+	display: block;
+	width: 34px;
+	height: 2px;
+	margin-top: 5px;
+	background: #81E458;
+}
+
+.plate .sub {
+	margin: 0;
+	color: #8FA0AA;
+	font-size: 11.5px;
+	line-height: 1.55;
+}
+
+.plate .read {
+	margin: 9px 0 0;
+	font-size: 11px;
+	color: #5F7580;
+	letter-spacing: .02em;
+	font-variant-numeric: tabular-nums;
+	white-space: pre-wrap;
+}
+.plate .read b { color: #81E458; font-weight: 500; }
+.plate .read i { color: #E9C46A; font-style: normal; }
+
+/* --- Tastenhinweis unten --- */
+.hint {
+	position: fixed;
+	z-index: 2;
+	left: 50%;
+	transform: translateX(-50%);
+	bottom: max(14px, env(safe-area-inset-bottom));
+	padding: 7px 14px;
+	background: rgba(12, 16, 24, .82);
+	border: 1px solid rgba(140, 180, 200, .12);
+	border-radius: 3px;
+	color: #6E828D;
+	font-size: 11px;
+	white-space: nowrap;
+	pointer-events: none;
+	backdrop-filter: blur(6px);
+}
+.hint .k {
+	display: inline-block;
+	padding: 1px 6px;
+	margin: 0 1px;
+	border: 1px solid rgba(140, 180, 200, .28);
+	border-radius: 2px;
+	color: #A8B8C2;
+}
+
+/* --- Bedienung auf Beruehrungsgeraeten --- */
+.touch {
+	position: fixed;
+	z-index: 3;
+	inset: auto 0 0 0;
+	display: flex;
+	gap: 10px;
+	padding: 12px max(12px, env(safe-area-inset-left))
+	         max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-right));
+}
+.touch button {
+	flex: 1;
+	height: 62px;
+	background: rgba(20, 26, 36, .86);
+	border: 1px solid rgba(140, 180, 200, .22);
+	border-radius: 4px;
+	color: #8FA0AA;
+	font: inherit;
+	font-size: 11px;
+	letter-spacing: .08em;
+	touch-action: manipulation;
+}
+.touch button:active { background: rgba(129, 228, 88, .16); border-color: #81E458; color: #81E458; }
+.touch #tPlunge { flex: 0 0 34%; }
+
+.fallback {
+	position: fixed;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	margin: 0;
+	padding: 2rem;
+	text-align: center;
+	color: #DCE2E6;
+	background: #0A0D14;
+	z-index: 9;
+}
+
+
+/* ---- Kompaktstufe: Handy und Einbettung im Rahmen. Nur kleine Fenster,
+   der Desktop bleibt wie er ist. ---- */
+@media (max-width: 640px), (max-height: 460px){
+  .plate{ padding:6px 9px; max-width:calc(100vw - 16px); }
+  .plate h1{ font-size:12px; margin:0; }
+  .plate h1::after{ display:none; }
+  .plate .sub, .plate .read{ display:none; }
+  .hint{ display:none; }
+  .touch{ bottom:6px; gap:6px; padding:0 6px; }
+  .touch button{ min-height:40px; height:40px; font-size:10px; opacity:.9; }
+}
+@media (max-width: 620px) {
+	.plate .sub { display: none; }
+	.hint { display: none; }
+}

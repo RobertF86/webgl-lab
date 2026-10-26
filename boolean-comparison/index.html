@@ -1,18 +1,7 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#0D1214" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#EAEEEE" media="(prefers-color-scheme: light)">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="description" content="The same boolean cut evaluated two ways: as real triangles via BSP CSG, and as a distance field via raymarching.">
-<!--CONTENT-START-->
-<title>Two Ways to Cut a Solid</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<!doctype html><html lang="en" data-theme="dark"><head><meta charset=utf-8>
+<title>Two Ways to Cut a Solid</title><meta name=viewport content="width=device-width,initial-scale=1"></head><body>
+
+<link rel="stylesheet" href="../fonts/fonts.css">
 <style>
 /* ---- light is the bare :root; dark redefines the same token names ---- */
 :root{
@@ -155,10 +144,22 @@ input[type=range]:focus-visible{ outline:2px solid var(--field); outline-offset:
 #fallback strong{ display:block; margin-bottom:10px; font-size:14px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; }
 #fallback p{ max-width:34ch; margin:0 auto; line-height:1.6; color:var(--muted); font-size:15px; }
 
+
+/* ---- Kompaktstufe: Handy und Einbettung im Rahmen. Nur kleine Fenster,
+   der Desktop bleibt wie er ist. ---- */
+@media (max-width: 640px), (max-height: 460px){
+  .plate{ padding:5px 8px; }
+  .plate .tag{ font-size:10px; }
+  .plate .sub, .plate dl{ display:none; }
+  #hint{ display:none; }
+  .seg{ padding:3px; gap:2px; }
+  .seg button, .toggles button{ font-size:10px; min-height:28px; padding:4px 8px; letter-spacing:.06em; }
+  .knobs{ max-height:min(46vh, 280px); overflow:auto; padding:8px 10px; gap:6px; }
+}
 @media (prefers-reduced-motion: reduce){ *{ transition-duration:.01ms !important; } }
 </style>
-</head>
-<body>
+
+
 <div id="stage"><canvas id="gl" aria-label="Two panes comparing a mesh boolean against a signed distance field boolean"></canvas></div>
 
 <div class="plate" id="plateA">
@@ -211,8 +212,8 @@ input[type=range]:focus-visible{ outline:2px solid var(--field); outline-offset:
 </div>
 
 <div id="fallback"><div>
-  <strong>WebGL unavailable</strong>
-  <p id="fallbackMsg">This browser could not start a WebGL context. Try Safari or Chrome with hardware acceleration enabled.</p>
+  <strong>WebGPU unavailable</strong>
+  <p id="fallbackMsg">This browser could not start a WebGPU context. Try Safari or Chrome with hardware acceleration enabled.</p>
 </div></div>
 
 <script>
@@ -230,6 +231,9 @@ input[type=range]:focus-visible{ outline:2px solid var(--field); outline-offset:
 
    Both panes are told the same operation, the same box, the same cutter
    sphere. What differs is what a "solid" even means to each of them.
+
+   Diese Fassung zeichnet mit WebGPU (WGSL); das WebGL-Original liegt in
+   webgl.html und wird automatisch geladen, wenn WebGPU fehlt.
    ========================================================================= */
 
 var CFG = {
@@ -261,6 +265,16 @@ function perspective(o, fovy, aspect, near, far) {
   o.fill(0);
   o[0] = f / aspect; o[5] = f; o[10] = (far + near) * nf; o[11] = -1; o[14] = 2 * far * near * nf;
   return o;
+}
+
+// WebGPU-Clip-Tiefe liegt in [0, 1], WebGL in [-1, 1]: die dritte Zeile der
+// spaltenweise gespeicherten Projektionsmatrix wird umgerechnet, der Rest bleibt
+function clip01(p) {
+  p[2]  = 0.5 * p[2]  + 0.5 * p[3];
+  p[6]  = 0.5 * p[6]  + 0.5 * p[7];
+  p[10] = 0.5 * p[10] + 0.5 * p[11];
+  p[14] = 0.5 * p[14] + 0.5 * p[15];
+  return p;
 }
 
 function lookAt(o, ex, ey, ez, cx, cy, cz) {
@@ -474,228 +488,360 @@ function spherePolys(cx, cy, cz, r, slices, stacks) {
 }
 
 /* =========================================================================
-   Shaders. The lighting is written once, below, and pasted into BOTH the
-   raster and the raymarch fragment shaders. If the two panes were lit even
-   slightly differently the comparison would be worthless.
+   Shader (WGSL). Die Beleuchtung steht einmal unten und wird in BEIDE
+   Fragment-Shader (Raster und Raymarch) eingefügt - wären die Hälften auch
+   nur leicht verschieden beleuchtet, wäre der Vergleich wertlos.
+
+   Uniform-Structs tragen ihre Byte-Offsets als Kommentar; die Schreib-
+   funktionen im Abschnitt "draw" nutzen dieselben Offsets (Float-Index =
+   Offset / 4). Ein vec3 belegt 16 Byte, ein f32 darf in seiner Lücke liegen.
    ========================================================================= */
 var SHADE = [
-"uniform vec3 uKey;",
-"uniform vec3 uFill;",
-"uniform vec3 uLdir;",
-"uniform vec3 uSolid;",
-"uniform vec3 uSolidCut;",
+"struct Shade {",
+"  key      : vec3<f32>,",                 // Offset  0
+"  fill     : vec3<f32>,",                 // Offset 16
+"  ldir     : vec3<f32>,",                 // Offset 32
+"  solid    : vec3<f32>,",                 // Offset 48
+"  solidCut : vec3<f32>,",                 // Offset 64 -> Größe 80
+"};",
+"@group(1) @binding(0) var<uniform> S : Shade;",
 "",
-"vec3 shoulder(vec3 c){",           // soft highlight roll-off instead of a hard clip
-"  vec3 k = vec3(0.82);",
-"  vec3 d = max(c - k, vec3(0.0));",
+"fn shoulder(c : vec3<f32>) -> vec3<f32> {",   // weiches Abrollen der Lichter statt hartem Clip
+"  let k = vec3<f32>(0.82);",
+"  let d = max(c - k, vec3<f32>(0.0));",
 "  return min(c, k) + d / (1.0 + d / (1.0 - k));",
 "}",
 "",
-"vec3 shade(vec3 N, vec3 V, vec3 albedo){",
-"  vec3 L = normalize(uLdir);",
-"  vec3 H = normalize(L + V);",
-"  float ndl = max(dot(N, L), 0.0);",
-"  float ndh = max(dot(N, H), 0.0);",
-"  float ndv = max(dot(N, V), 0.0);",
-"  float fres = pow(1.0 - ndv, 4.0);",
-"  float sheen = 0.5 + 0.5 * N.y;",
-"  vec3 c  = albedo * (uFill * (0.35 + 0.65 * sheen) * 0.88 + uKey * ndl * 1.22);",
-"  c += uKey * pow(ndh, 44.0) * 0.85;",
-"  c += uFill * fres * 0.40;",
+"fn shade(N : vec3<f32>, V : vec3<f32>, albedo : vec3<f32>) -> vec3<f32> {",
+"  let L = normalize(S.ldir);",
+"  let H = normalize(L + V);",
+"  let ndl = max(dot(N, L), 0.0);",
+"  let ndh = max(dot(N, H), 0.0);",
+"  let ndv = max(dot(N, V), 0.0);",
+"  let fres = pow(1.0 - ndv, 4.0);",
+"  let sheen = 0.5 + 0.5 * N.y;",
+"  var c = albedo * (S.fill * (0.35 + 0.65 * sheen) * 0.88 + S.key * ndl * 1.22);",
+"  c = c + S.key * pow(ndh, 44.0) * 0.85;",
+"  c = c + S.fill * fres * 0.40;",
 "  return shoulder(c);",
 "}"
 ].join("\n");
 
-/* --------------------------------------------------------- raster (mesh) */
-var VS_MESH = [
-"precision highp float;",
-"attribute vec3 aPos;",
-"attribute vec3 aNor;",
-"attribute float aTag;",
-"uniform mat4 uVP;",
-"varying vec3 vP; varying vec3 vN; varying float vT;",
-"void main(){ vP = aPos; vN = aNor; vT = aTag; gl_Position = uVP * vec4(aPos, 1.0); }"
+/* ------------------------------------------- bildschirmfüllendes Dreieck */
+var VS_FULL = [
+"@vertex fn vsFull(@builtin(vertex_index) vi : u32) -> @builtin(position) vec4<f32> {",
+"  var p = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));",
+"  return vec4<f32>(p[vi], 0.0, 1.0);",
+"}"
 ].join("\n");
 
-var FS_MESH = [
-"precision highp float;",
-"varying vec3 vP; varying vec3 vN; varying float vT;",
-"uniform vec3 uCamPos;",
+/* --------------------------------------------------------- raster (mesh) */
+var WGSL_MESH = [
+"struct MeshU {",
+"  vp     : mat4x4<f32>,",                 // Offset  0
+"  camPos : vec3<f32>,",                   // Offset 64 -> Größe 80
+"};",
+"@group(0) @binding(0) var<uniform> U : MeshU;",
 SHADE,
-"void main(){",
-"  vec3 V = normalize(uCamPos - vP);",
-"  vec3 N = normalize(vN);",
-"  if (dot(N, V) < 0.0) N = -N;",   // CSG output is double-sided in places
-"  vec3 albedo = mix(uSolid, uSolidCut, clamp(vT, 0.0, 1.0));",
-"  gl_FragColor = vec4(shade(N, V, albedo), 1.0);",
+"",
+"struct VOut {",
+"  @builtin(position) pos : vec4<f32>,",
+"  @location(0) vP : vec3<f32>,",
+"  @location(1) vN : vec3<f32>,",
+"  @location(2) vT : f32,",
+"};",
+"",
+"@vertex fn vsMesh(@location(0) aPos : vec3<f32>, @location(1) aNor : vec3<f32>,",
+"                  @location(2) aTag : f32) -> VOut {",
+"  var o : VOut;",
+"  o.pos = U.vp * vec4<f32>(aPos, 1.0);",
+"  o.vP = aPos; o.vN = aNor; o.vT = aTag;",
+"  return o;",
+"}",
+"",
+"@fragment fn fsMesh(i : VOut) -> @location(0) vec4<f32> {",
+"  let V = normalize(U.camPos - i.vP);",
+"  var N = normalize(i.vN);",
+"  if (dot(N, V) < 0.0) { N = -N; }",      // CSG-Ausgabe ist stellenweise doppelseitig
+"  let albedo = mix(S.solid, S.solidCut, clamp(i.vT, 0.0, 1.0));",
+"  return vec4<f32>(shade(N, V, albedo), 1.0);",
 "}"
 ].join("\n");
 
 /* ------------------------------------------------------- raymarch (field) */
-var VS_FULL = [
-"precision highp float;",
-"attribute vec2 aPos;",
-"void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }"
-].join("\n");
-
-var FS_SDF = [
-"precision highp float;",
-"uniform vec2  uOrg;",             // pane origin/size in device pixels
-"uniform vec2  uSize;",
-"uniform vec3  uCamPos, uCamRight, uCamUp, uCamFwd;",
-"uniform float uTanHalf, uAspect;",
-"uniform vec3  uCut;",
-"uniform float uBoxH, uCutR, uBlend, uOp, uHeat, uSurf;",
+var WGSL_SDF = [
+"struct SdfU {",
+"  org      : vec2<f32>,",                 // Offset   0  Ursprung/Größe der Hälfte in Gerätepixeln
+"  size     : vec2<f32>,",                 // Offset   8
+"  camPos   : vec3<f32>,",                 // Offset  16
+"  tanHalf  : f32,",                       // Offset  28
+"  camRight : vec3<f32>,",                 // Offset  32
+"  aspect   : f32,",                       // Offset  44
+"  camUp    : vec3<f32>,",                 // Offset  48
+"  boxH     : f32,",                       // Offset  60
+"  camFwd   : vec3<f32>,",                 // Offset  64
+"  cutR     : f32,",                       // Offset  76
+"  cut      : vec3<f32>,",                 // Offset  80
+"  blend    : f32,",                       // Offset  92
+"  op       : f32,",                       // Offset  96
+"  heat     : f32,",                       // Offset 100
+"  surf     : f32,",                       // Offset 104 -> Größe 112
+"};",
+"@group(0) @binding(0) var<uniform> U : SdfU;",
 SHADE,
+VS_FULL,
 "",
-"float sdBox(vec3 p, float b){",
-"  vec3 q = abs(p) - vec3(b);",
-"  return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);",
+"fn sdBox(p : vec3<f32>, b : f32) -> f32 {",
+"  let q = abs(p) - vec3<f32>(b);",
+"  return length(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0);",
 "}",
-"float sdSphere(vec3 p, vec3 c, float r){ return length(p - c) - r; }",
+"fn sdSphere(p : vec3<f32>, c : vec3<f32>, r : f32) -> f32 { return length(p - c) - r; }",
 "",
-/* the entire boolean vocabulary of a distance field, in four lines */
-"float smin(float a, float b, float k){",
-"  if (k <= 0.0) return min(a, b);",
-"  float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);",
+/* das gesamte Boolesche Vokabular eines Distanzfelds, in vier Zeilen */
+"fn smin(a : f32, b : f32, k : f32) -> f32 {",
+"  if (k <= 0.0) { return min(a, b); }",
+"  let h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);",
 "  return mix(b, a, h) - k * h * (1.0 - h);",
 "}",
-"float smax(float a, float b, float k){ return -smin(-a, -b, k); }",
+"fn smax(a : f32, b : f32, k : f32) -> f32 { return -smin(-a, -b, k); }",
 "",
-"float combine(float a, float b){",
-"  if (uOp < 0.5) return smax(a, -b, uBlend);",   // subtract
-"  if (uOp < 1.5) return smin(a,  b, uBlend);",   // union
-"  return smax(a, b, uBlend);",                   // intersect
+"fn combine(a : f32, b : f32) -> f32 {",
+"  if (U.op < 0.5) { return smax(a, -b, U.blend); }",   // subtract
+"  if (U.op < 1.5) { return smin(a,  b, U.blend); }",   // union
+"  return smax(a, b, U.blend);",                         // intersect
 "}",
-"float map(vec3 p){ return combine(sdBox(p, uBoxH), sdSphere(p, uCut, uCutR)); }",
+"fn map(p : vec3<f32>) -> f32 { return combine(sdBox(p, U.boxH), sdSphere(p, U.cut, U.cutR)); }",
 "",
-"vec3 normalAt(vec3 p){",
-"  vec2 e = vec2(1.0, -1.0) * 0.0007;",
+"fn normalAt(p : vec3<f32>) -> vec3<f32> {",
+"  let e = vec2<f32>(1.0, -1.0) * 0.0007;",
 "  return normalize(e.xyy * map(p + e.xyy) + e.yyx * map(p + e.yyx) +",
 "                   e.yxy * map(p + e.yxy) + e.xxx * map(p + e.xxx));",
 "}",
 "",
-"vec3 heatRamp(float t){",
-"  vec3 a = vec3(0.03, 0.05, 0.07), b = vec3(0.12, 0.34, 0.42);",
-"  vec3 c = vec3(0.94, 0.54, 0.30), d = vec3(1.0, 0.97, 0.90);",
-"  if (t < 0.40) return mix(a, b, t / 0.40);",
-"  if (t < 0.75) return mix(b, c, (t - 0.40) / 0.35);",
+"fn heatRamp(t : f32) -> vec3<f32> {",
+"  let a = vec3<f32>(0.03, 0.05, 0.07); let b = vec3<f32>(0.12, 0.34, 0.42);",
+"  let c = vec3<f32>(0.94, 0.54, 0.30); let d = vec3<f32>(1.0, 0.97, 0.90);",
+"  if (t < 0.40) { return mix(a, b, t / 0.40); }",
+"  if (t < 0.75) { return mix(b, c, (t - 0.40) / 0.35); }",
 "  return mix(c, d, (t - 0.75) / 0.25);",
 "}",
 "",
-"void main(){",
-"  vec2 uv = (gl_FragCoord.xy - uOrg) / uSize * 2.0 - 1.0;",
-"  vec3 rd = normalize(uCamRight * (uv.x * uTanHalf * uAspect) +",
-"                      uCamUp    * (uv.y * uTanHalf) + uCamFwd);",
-"  vec3 ro = uCamPos;",
+"@fragment fn fsSdf(@builtin(position) fc : vec4<f32>) -> @location(0) vec4<f32> {",
+"  var uv = (fc.xy - U.org) / U.size * 2.0 - 1.0;",
+"  uv.y = -uv.y;",   // position hat den Ursprung oben links, gl_FragCoord hatte ihn unten links
+"  let rd = normalize(U.camRight * (uv.x * U.tanHalf * U.aspect) +",
+"                     U.camUp    * (uv.y * U.tanHalf) + U.camFwd);",
+"  let ro = U.camPos;",
 "",
-/* skip the empty space in front of the scene's bounding sphere */
-"  float bb = dot(ro, rd);",
-"  float cc = dot(ro, ro) - 1.85 * 1.85;",
-"  float hh = bb * bb - cc;",
-"  if (hh < 0.0) discard;",
-"  float root = sqrt(hh);",
-"  float t = max(-bb - root, 0.0);",
-"  float tmax = -bb + root;",
+/* den leeren Raum vor der Hüllkugel der Szene überspringen */
+"  let bb = dot(ro, rd);",
+"  let cc = dot(ro, ro) - 1.85 * 1.85;",
+"  let hh = bb * bb - cc;",
+"  if (hh < 0.0) { discard; }",
+"  let root = sqrt(hh);",
+"  var t = max(-bb - root, 0.0);",
+"  let tmax = -bb + root;",
 "",
-"  float steps = 0.0;",
-"  bool hit = false;",
-"  for (int i = 0; i < 96; i++){",
-"    vec3 p = ro + rd * t;",
-"    float d = map(p);",
-"    steps += 1.0;",
-"    if (d < uSurf){ hit = true; break; }",
-"    t += d;",
-"    if (t > tmax) break;",
+"  var steps = 0.0;",
+"  var hit = false;",
+"  for (var i = 0; i < 96; i++) {",
+"    let p = ro + rd * t;",
+"    let d = map(p);",
+"    steps = steps + 1.0;",
+"    if (d < U.surf) { hit = true; break; }",
+"    t = t + d;",
+"    if (t > tmax) { break; }",
 "  }",
 "",
-"  if (uHeat > 0.5){ gl_FragColor = vec4(heatRamp(steps / 96.0), 1.0); return; }",
-"  if (!hit) discard;",
+"  if (U.heat > 0.5) { return vec4<f32>(heatRamp(steps / 96.0), 1.0); }",
+"  if (!hit) { discard; }",
 "",
-"  vec3 p = ro + rd * t;",
-"  vec3 N = normalAt(p);",
-"  vec3 V = normalize(uCamPos - p);",
-/* tint whichever primitive owns this surface, matching the mesh pane's tags */
-"  float db = abs(sdBox(p, uBoxH)), ds = abs(sdSphere(p, uCut, uCutR));",
-"  float tag = smoothstep(0.010, -0.010, ds - db);",
-"  gl_FragColor = vec4(shade(N, V, mix(uSolid, uSolidCut, tag)), 1.0);",
+"  let p = ro + rd * t;",
+"  let N = normalAt(p);",
+"  let V = normalize(U.camPos - p);",
+/* die Fläche nach ihrem Primitiv einfärben, passend zu den Tags der Mesh-Hälfte;
+   GLSL hatte smoothstep(0.010, -0.010, ds - db) - dieselbe Kurve, hier mit
+   aufsteigenden Kanten, weil WGSL fallende Kanten nicht zusichert */
+"  let db = abs(sdBox(p, U.boxH)); let ds = abs(sdSphere(p, U.cut, U.cutR));",
+"  let tag = smoothstep(-0.010, 0.010, db - ds);",
+"  return vec4<f32>(shade(N, V, mix(S.solid, S.solidCut, tag)), 1.0);",
 "}"
 ].join("\n");
 
 /* ------------------------------------------------------------ wire + sky */
-var VS_LINE = [
-"precision highp float;",
-"attribute vec3 aPos;",
-"uniform mat4 uVP;",
-"void main(){ gl_Position = uVP * vec4(aPos, 1.0); }"
+var WGSL_LINE = [
+"struct LineU {",
+"  vp    : mat4x4<f32>,",                  // Offset  0
+"  color : vec3<f32>,",                    // Offset 64
+"  alpha : f32,",                          // Offset 76 -> Größe 80
+"};",
+"@group(0) @binding(0) var<uniform> U : LineU;",
+"@vertex fn vsLine(@location(0) aPos : vec3<f32>) -> @builtin(position) vec4<f32> {",
+"  return U.vp * vec4<f32>(aPos, 1.0);",
+"}",
+"@fragment fn fsLine() -> @location(0) vec4<f32> { return vec4<f32>(U.color, U.alpha); }"
 ].join("\n");
 
-var FS_LINE = [
-"precision highp float;",
-"uniform vec3 uColor;",
-"uniform float uAlpha;",
-"void main(){ gl_FragColor = vec4(uColor, uAlpha); }"
-].join("\n");
-
-var FS_SKY = [
-"precision highp float;",
-"uniform vec2 uOrg, uSize;",
-"uniform vec3 uTop, uBot;",
-"void main(){",
-"  vec2 uv = (gl_FragCoord.xy - uOrg) / uSize;",
-"  vec3 c = mix(uBot, uTop, pow(clamp(uv.y, 0.0, 1.0), 0.9));",
-"  c *= 1.0 - smoothstep(0.30, 1.0, distance(uv, vec2(0.5, 0.55))) * 0.38;",
-"  gl_FragColor = vec4(c, 1.0);",
+var WGSL_SKY = [
+"struct SkyU {",
+"  org  : vec2<f32>,",                     // Offset  0
+"  size : vec2<f32>,",                     // Offset  8
+"  top  : vec3<f32>,",                     // Offset 16
+"  bot  : vec3<f32>,",                     // Offset 32 -> Größe 48
+"};",
+"@group(0) @binding(0) var<uniform> U : SkyU;",
+VS_FULL,
+"",
+"@fragment fn fsSky(@builtin(position) fc : vec4<f32>) -> @location(0) vec4<f32> {",
+"  var uv = (fc.xy - U.org) / U.size;",
+"  uv.y = 1.0 - uv.y;",   // Ursprung oben links -> y nach oben wie gl_FragCoord
+"  var c = mix(U.bot, U.top, pow(clamp(uv.y, 0.0, 1.0), 0.9));",
+"  c = c * (1.0 - smoothstep(0.30, 1.0, distance(uv, vec2<f32>(0.5, 0.55))) * 0.38);",
+"  return vec4<f32>(c, 1.0);",
 "}"
 ].join("\n");
 
-/* ------------------------------------------------------------ gl context */
+/* ---------------------------------------------------------- WebGPU-Gerät */
 var canvas = document.getElementById("gl");
-var gl = null;
-try {
-  var opts = { antialias: true, alpha: false, depth: true, premultipliedAlpha: false,
-               powerPreference: "high-performance" };
-  gl = canvas.getContext("webgl", opts) || canvas.getContext("experimental-webgl", opts);
-} catch (e) { gl = null; }
-if (!gl) { document.getElementById("fallback").classList.add("show"); return; }
+var device = null, context = null, format = null;
 
-function compile(type, src, label) {
-  var sh = gl.createShader(type);
-  gl.shaderSource(sh, src); gl.compileShader(sh);
-  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(label + ": " + gl.getShaderInfoLog(sh));
-  return sh;
-}
-function program(vs, fs, label) {
-  var p = gl.createProgram();
-  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs, label + " vs"));
-  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs, label + " fs"));
-  gl.linkProgram(p);
-  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(label + " link: " + gl.getProgramInfoLog(p));
-  p.u = {}; p.a = {};
-  var n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS), i, d;
-  for (i = 0; i < n; i++) { d = gl.getActiveUniform(p, i); p.u[d.name] = gl.getUniformLocation(p, d.name); }
-  n = gl.getProgramParameter(p, gl.ACTIVE_ATTRIBUTES);
-  for (i = 0; i < n; i++) { d = gl.getActiveAttrib(p, i); p.a[d.name] = gl.getAttribLocation(p, d.name); }
-  p.U = function (name) { return p.u[name] === undefined ? null : p.u[name]; };
-  return p;
-}
-
-var pMesh, pSdf, pLine, pSky, quadBuf, bufP, bufN, bufT, bufL;
-try {
-  pMesh = program(VS_MESH, FS_MESH, "mesh");
-  pSdf  = program(VS_FULL, FS_SDF,  "sdf");
-  pLine = program(VS_LINE, FS_LINE, "line");
-  pSky  = program(VS_FULL, FS_SKY,  "sky");
-} catch (err) {
-  document.getElementById("fallbackMsg").textContent =
-    "WebGL started but rejected the shaders. " + err.message;
+function zeigeHinweis(text) {                    // Hinweis-Overlay, nur für Geräteverlust zur Laufzeit
+  document.getElementById("fallbackMsg").textContent = text;
   document.getElementById("fallback").classList.add("show");
-  return;
 }
-quadBuf = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
-gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
-bufP = gl.createBuffer(); bufN = gl.createBuffer(); bufT = gl.createBuffer(); bufL = gl.createBuffer();
+function rueckfall(grund) {
+  console.error("WebGPU unavailable (" + grund + "), switching to the WebGL version");
+  location.replace("webgl.html#fallback=" + encodeURIComponent(grund));
+}
+async function starteWebGPU(canvas) {
+  if (!navigator.gpu) return rueckfall(window.isSecureContext ? "no navigator.gpu" : "insecure context, WebGPU needs https or localhost");
+  var adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) return rueckfall("no adapter");
+  var device = await adapter.requestDevice();
+  device.addEventListener("uncapturederror", function (e) { console.error("WebGPU:", e.error.message); });
+  device.lost.then(function (info) { if (info.reason !== "destroyed") zeigeHinweis("GPU device lost: " + info.message); });
+  var context = canvas.getContext("webgpu");
+  var format = navigator.gpu.getPreferredCanvasFormat();
+  context.configure({ device: device, format: format, alphaMode: "opaque" });
+  return { adapter: adapter, device: device, context: context, format: format };
+}
+
+/* Shader-Modul anlegen und die Übersetzungsmeldungen (Zeile:Spalte im WGSL)
+   in die Konsole geben */
+async function modul(code, label) {
+  var m = device.createShaderModule({ label: label, code: code });
+  var info = await m.getCompilationInfo();
+  for (var i = 0; i < info.messages.length; i++) {
+    var msg = info.messages[i];
+    var text = "WGSL " + label + " " + msg.type + " " + msg.lineNum + ":" + msg.linePos + " " + msg.message;
+    if (msg.type === "error") console.error(text); else console.warn(text);
+  }
+  return m;
+}
+
+/* GPU-Ressourcen: Pipelines, Uniform-Puffer, Bind-Groups, Vertex-Puffer,
+   MSAA-/Tiefenziele */
+var G = { bglU: null, pipeSky: null, pipeMesh: null, pipeMeshOffset: null, pipeLine: null, pipeSdf: null,
+          uShade: null, uMesh: null, uSdf: null, uLine: null, uSky: [null, null],
+          bgShade: null, bgMesh: null, bgSdf: null, bgLine: null, bgSky: [null, null],
+          bufP: null, bufN: null, bufT: null, bufL: null, cap: 0, lcap: 0,
+          msaaTex: null, depthTex: null, msaaView: null, depthView: null };
+
+function uniformPuffer(bytes, label) {
+  return device.createBuffer({ label: label, size: bytes,
+                               usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+}
+function bindGroup(buf) {
+  return device.createBindGroup({ layout: G.bglU, entries: [{ binding: 0, resource: { buffer: buf } }] });
+}
+
+async function baueGpu() {
+  var DEPTH = "depth24plus", MSAA = { count: 4 };   // 4x wie antialias:true in WebGL
+  G.bglU = device.createBindGroupLayout({ entries: [
+    { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } } ] });
+  var plEins = device.createPipelineLayout({ bindGroupLayouts: [G.bglU] });          // Himmel, Linien
+  var plZwei = device.createPipelineLayout({ bindGroupLayouts: [G.bglU, G.bglU] });  // Mesh, SDF (+ Shade)
+
+  var mSky  = await modul(WGSL_SKY,  "sky");
+  var mMesh = await modul(WGSL_MESH, "mesh");
+  var mLine = await modul(WGSL_LINE, "line");
+  var mSdf  = await modul(WGSL_SDF,  "sdf");
+
+  /* Himmel: kein Tiefentest, kein Tiefenschreiben (DEPTH_TEST war aus) */
+  G.pipeSky = device.createRenderPipeline({
+    label: "sky", layout: plEins,
+    vertex: { module: mSky, entryPoint: "vsFull" },
+    fragment: { module: mSky, entryPoint: "fsSky", targets: [{ format: format }] },
+    primitive: { topology: "triangle-list" },
+    depthStencil: { format: DEPTH, depthWriteEnabled: false, depthCompare: "always" },
+    multisample: MSAA });
+
+  /* Mesh: Tiefentest LESS mit Schreiben, doppelseitig (kein Culling); zweite
+     Fassung mit Polygon-Offset (1, 1) für die Füllung unter dem Drahtgitter */
+  function meshPipe(label, offset) {
+    return device.createRenderPipeline({
+      label: label, layout: plZwei,
+      vertex: { module: mMesh, entryPoint: "vsMesh", buffers: [
+        { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+        { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
+        { arrayStride: 4,  attributes: [{ shaderLocation: 2, offset: 0, format: "float32" }] } ] },
+      fragment: { module: mMesh, entryPoint: "fsMesh", targets: [{ format: format }] },
+      primitive: { topology: "triangle-list", cullMode: "none" },
+      depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: "less",
+                      depthBias: offset ? 1 : 0, depthBiasSlopeScale: offset ? 1.0 : 0.0, depthBiasClamp: 0.0 },
+      multisample: MSAA });
+  }
+  G.pipeMesh = meshPipe("mesh", false);
+  G.pipeMeshOffset = meshPipe("mesh-offset", true);
+
+  /* Drahtgitter: 1-px-Linien, Blend SRC_ALPHA / ONE_MINUS_SRC_ALPHA, Tiefentest wie das Mesh */
+  G.pipeLine = device.createRenderPipeline({
+    label: "line", layout: plEins,
+    vertex: { module: mLine, entryPoint: "vsLine", buffers: [
+      { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] } ] },
+    fragment: { module: mLine, entryPoint: "fsLine", targets: [{ format: format, blend: {
+      color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+      alpha: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" } } }] },
+    primitive: { topology: "line-list" },
+    depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: "less" },
+    multisample: MSAA });
+
+  /* Raymarch: bildschirmfüllendes Dreieck, kein Tiefentest, discard wo nichts getroffen */
+  G.pipeSdf = device.createRenderPipeline({
+    label: "sdf", layout: plZwei,
+    vertex: { module: mSdf, entryPoint: "vsFull" },
+    fragment: { module: mSdf, entryPoint: "fsSdf", targets: [{ format: format }] },
+    primitive: { topology: "triangle-list" },
+    depthStencil: { format: DEPTH, depthWriteEnabled: false, depthCompare: "always" },
+    multisample: MSAA });
+
+  G.uShade = uniformPuffer(80, "shade");  G.bgShade = bindGroup(G.uShade);
+  G.uMesh  = uniformPuffer(80, "mesh");   G.bgMesh  = bindGroup(G.uMesh);
+  G.uSdf   = uniformPuffer(112, "sdf");   G.bgSdf   = bindGroup(G.uSdf);
+  G.uLine  = uniformPuffer(80, "line");   G.bgLine  = bindGroup(G.uLine);
+  // der Himmel wird je Frame zweimal gezeichnet (eine Hälfte je Aufruf); ein
+  // zweites writeBuffer vor dem Submit träfe beide Aufrufe, darum zwei Puffer
+  G.uSky[0] = uniformPuffer(48, "skyA");  G.bgSky[0] = bindGroup(G.uSky[0]);
+  G.uSky[1] = uniformPuffer(48, "skyB");  G.bgSky[1] = bindGroup(G.uSky[1]);
+}
+
+/* Vertex-Puffer der Mesh-Hälfte: wachsen nur mit MB.cap und werden bei jeder
+   Neuberechnung per writeBuffer gefüllt - nie je Frame neu angelegt */
+function sichereVertexPuffer() {
+  var usage = GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST;
+  if (MB.cap > G.cap) {
+    if (G.bufP) { G.bufP.destroy(); G.bufN.destroy(); G.bufT.destroy(); }
+    G.cap = MB.cap;
+    G.bufP = device.createBuffer({ label: "pos", size: G.cap * 12, usage: usage });
+    G.bufN = device.createBuffer({ label: "nor", size: G.cap * 12, usage: usage });
+    G.bufT = device.createBuffer({ label: "tag", size: G.cap * 4,  usage: usage });
+  }
+  if (MB.lcap > G.lcap) {
+    if (G.bufL) G.bufL.destroy();
+    G.lcap = MB.lcap;
+    G.bufL = device.createBuffer({ label: "line", size: G.lcap * 12, usage: usage });
+  }
+}
 
 /* ------------------------------------------------------- palette from CSS */
 var PAL = {};
@@ -790,14 +936,14 @@ function solveMesh() {
 
   solved.key = key; solved.ms = t1 - t0; solved.tris = MB.tri / 3;
 
-  gl.bindBuffer(gl.ARRAY_BUFFER, bufP);
-  gl.bufferData(gl.ARRAY_BUFFER, MB.P.subarray(0, MB.tri * 3), gl.DYNAMIC_DRAW);
-  gl.bindBuffer(gl.ARRAY_BUFFER, bufN);
-  gl.bufferData(gl.ARRAY_BUFFER, MB.N.subarray(0, MB.tri * 3), gl.DYNAMIC_DRAW);
-  gl.bindBuffer(gl.ARRAY_BUFFER, bufT);
-  gl.bufferData(gl.ARRAY_BUFFER, MB.T.subarray(0, MB.tri), gl.DYNAMIC_DRAW);
-  gl.bindBuffer(gl.ARRAY_BUFFER, bufL);
-  gl.bufferData(gl.ARRAY_BUFFER, MB.L.subarray(0, MB.line * 3), gl.DYNAMIC_DRAW);
+  // Vertex-Puffer nur bei einer Neuberechnung füllen (writeBuffer), nie je Frame anlegen
+  sichereVertexPuffer();
+  if (MB.tri > 0) {
+    device.queue.writeBuffer(G.bufP, 0, MB.P, 0, MB.tri * 3);
+    device.queue.writeBuffer(G.bufN, 0, MB.N, 0, MB.tri * 3);
+    device.queue.writeBuffer(G.bufT, 0, MB.T, 0, MB.tri);
+  }
+  if (MB.line > 0) device.queue.writeBuffer(G.bufL, 0, MB.L, 0, MB.line * 3);
 }
 
 /* ---------------------------------------------------------- panes, camera */
@@ -819,6 +965,20 @@ function fitDistance(aspect) {
   return SCENE_R / Math.sin(Math.min(vHalf, hHalf)) * 1.06;
 }
 
+/* MSAA-Farb- und Tiefentextur in Canvas-Größe (4x, wie antialias:true in WebGL);
+   bei Größenänderung neu anlegen und die alten freigeben */
+function sichereZiele() {
+  if (G.msaaTex && G.msaaTex.width === W && G.msaaTex.height === H) return;
+  if (G.msaaTex) G.msaaTex.destroy();
+  if (G.depthTex) G.depthTex.destroy();
+  G.msaaTex = device.createTexture({ label: "msaa", size: [W, H], sampleCount: 4, format: format,
+                                     usage: GPUTextureUsage.RENDER_ATTACHMENT });
+  G.depthTex = device.createTexture({ label: "depth", size: [W, H], sampleCount: 4, format: "depth24plus",
+                                      usage: GPUTextureUsage.RENDER_ATTACHMENT });
+  G.msaaView = G.msaaTex.createView();
+  G.depthView = G.depthTex.createView();
+}
+
 function layout() {
   dpr = Math.min(window.devicePixelRatio || 1, 2) * renderScale;
   var cw = canvas.clientWidth || window.innerWidth;
@@ -826,6 +986,7 @@ function layout() {
   W = Math.max(2, Math.round(cw * dpr)); H = Math.max(2, Math.round(ch * dpr));
   if (canvas.width !== W) canvas.width = W;
   if (canvas.height !== H) canvas.height = H;
+  sichereZiele();
 
   wide = (cw / ch) > 1.08;
   if (wide) {
@@ -834,8 +995,8 @@ function layout() {
     paneB = { x: half, y: 0, w: W - half, h: H };
   } else {
     var hh = Math.floor(H / 2);
-    paneA = { x: 0, y: hh, w: W, h: H - hh };      // GL origin is bottom-left
-    paneB = { x: 0, y: 0, w: W, h: hh };
+    paneA = { x: 0, y: 0, w: W, h: H - hh };       // WebGPU-Ursprung ist oben links: A oben, B unten
+    paneB = { x: 0, y: H - hh, w: W, h: hh };
   }
   cam.dist = Math.max(fitDistance(paneA.w / paneA.h), fitDistance(paneB.w / paneB.h));
   cam.scale = (2 * cam.dist * Math.tan(CFG.fov * 0.5)) / (paneA.h / dpr);
@@ -886,30 +1047,43 @@ function updateCamera() {
 /* ------------------------------------------------------------------ draw */
 var LDIR = [0, 1, 0];
 
-function bindAttr(prog, name, buf, size) {
-  var loc = prog.a[name];
-  if (loc === undefined || loc < 0) return;
-  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-  gl.enableVertexAttribArray(loc);
-  gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0);
-}
+/* Uniform-Structs mit festen Byte-Offsets füllen (Float-Index = Offset / 4),
+   siehe die Struct-Kommentare in den WGSL-Quellen oben */
+var F_SHADE = new Float32Array(20), F_MESH = new Float32Array(20), F_LINE = new Float32Array(20);
+var F_SDF = new Float32Array(28), F_SKY = new Float32Array(12);
 
-function sky(pane) {
-  gl.useProgram(pSky);
-  bindAttr(pSky, "aPos", quadBuf, 2);
-  gl.uniform2f(pSky.U("uOrg"), pane.x, pane.y);
-  gl.uniform2f(pSky.U("uSize"), pane.w, pane.h);
-  gl.uniform3fv(pSky.U("uTop"), PAL.top);
-  gl.uniform3fv(pSky.U("uBot"), PAL.bot);
-  gl.drawArrays(gl.TRIANGLES, 0, 3);
-}
+function put3(f, i, v) { f[i] = v[0]; f[i + 1] = v[1]; f[i + 2] = v[2]; }
 
-function shadeUniforms(prog) {
-  gl.uniform3fv(prog.U("uKey"), PAL.key);
-  gl.uniform3fv(prog.U("uFill"), PAL.fill);
-  gl.uniform3fv(prog.U("uSolid"), PAL.solid);
-  gl.uniform3fv(prog.U("uSolidCut"), PAL.cut);
-  gl.uniform3f(prog.U("uLdir"), LDIR[0], LDIR[1], LDIR[2]);
+function schreibeShade() {                        // Shade: key 0, fill 16, ldir 32, solid 48, solidCut 64
+  put3(F_SHADE, 0, PAL.key); put3(F_SHADE, 4, PAL.fill); put3(F_SHADE, 8, LDIR);
+  put3(F_SHADE, 12, PAL.solid); put3(F_SHADE, 16, PAL.cut);
+  device.queue.writeBuffer(G.uShade, 0, F_SHADE);
+}
+function schreibeSky(i, pane) {                   // SkyU: org 0, size 8, top 16, bot 32
+  F_SKY[0] = pane.x; F_SKY[1] = pane.y; F_SKY[2] = pane.w; F_SKY[3] = pane.h;
+  put3(F_SKY, 4, PAL.top); put3(F_SKY, 8, PAL.bot);
+  device.queue.writeBuffer(G.uSky[i], 0, F_SKY);
+}
+function schreibeMesh() {                         // MeshU: vp 0, camPos 64
+  F_MESH.set(vp, 0);
+  F_MESH[16] = cam.ex; F_MESH[17] = cam.ey; F_MESH[18] = cam.ez;
+  device.queue.writeBuffer(G.uMesh, 0, F_MESH);
+}
+function schreibeLine() {                         // LineU: vp 0, color 64, alpha 76
+  F_LINE.set(vp, 0);
+  put3(F_LINE, 16, PAL.mesh); F_LINE[19] = 0.62;
+  device.queue.writeBuffer(G.uLine, 0, F_LINE);
+}
+function schreibeSdf(pane) {                      // SdfU: Offsets siehe Struct-Kommentar
+  var f = F_SDF;
+  f[0] = pane.x; f[1] = pane.y; f[2] = pane.w; f[3] = pane.h;
+  f[4] = cam.ex; f[5] = cam.ey; f[6] = cam.ez;     f[7] = Math.tan(CFG.fov * 0.5);
+  f[8] = cam.rx; f[9] = cam.ry; f[10] = cam.rz;    f[11] = pane.w / pane.h;
+  f[12] = cam.ux; f[13] = cam.uy; f[14] = cam.uz;  f[15] = CFG.boxH;
+  f[16] = cam.fx; f[17] = cam.fy; f[18] = cam.fz;  f[19] = CFG.cutR;
+  f[20] = state.cut.x; f[21] = state.cut.y; f[22] = state.cut.z; f[23] = state.blend;
+  f[24] = state.op; f[25] = state.heat ? 1 : 0; f[26] = CFG.surf; f[27] = 0;
+  device.queue.writeBuffer(G.uSdf, 0, f);
 }
 
 function draw() {
@@ -919,67 +1093,62 @@ function draw() {
   LDIR[1] = cam.ry * -0.45 + cam.uy * 0.72 + cam.fy * -0.50;
   LDIR[2] = cam.rz * -0.45 + cam.uz * 0.72 + cam.fz * -0.50;
 
-  gl.enable(gl.SCISSOR_TEST);
+  perspective(proj, CFG.fov, paneA.w / paneA.h, CFG.near, CFG.far);
+  clip01(proj);                                   // Tiefe 0…1 statt -1…1
+  mul(vp, proj, view);
+
+  // alle Uniforms vor dem Submit schreiben; writeBuffer liegt in der Queue davor
+  schreibeShade();
+  schreibeSky(0, paneA); schreibeSky(1, paneB);
+  schreibeMesh();
+  if (state.wire) schreibeLine();
+  schreibeSdf(paneB);
+
+  // ein Render-Pass für beide Hälften: die MSAA-Farbe wird in die Canvas-Textur
+  // aufgelöst, die Tiefe wird einmal gelöscht (nur Hälfte A testet sie)
+  var enc = device.createCommandEncoder();
+  var pass = enc.beginRenderPass({
+    colorAttachments: [{ view: G.msaaView, resolveTarget: context.getCurrentTexture().createView(),
+                         loadOp: "clear", clearValue: { r: 0, g: 0, b: 0, a: 1 }, storeOp: "discard" }],
+    depthStencilAttachment: { view: G.depthView, depthClearValue: 1.0,
+                              depthLoadOp: "clear", depthStoreOp: "discard" }
+  });
 
   /* ---- pane A : real triangles from the CSG solver ---- */
-  gl.viewport(paneA.x, paneA.y, paneA.w, paneA.h);
-  gl.scissor(paneA.x, paneA.y, paneA.w, paneA.h);
-  gl.depthMask(true);
-  gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND);
-  sky(paneA);
-  gl.clear(gl.DEPTH_BUFFER_BIT);
-  gl.enable(gl.DEPTH_TEST);
-  gl.disable(gl.CULL_FACE);                 // CSG output is shaded double-sided
-
-  perspective(proj, CFG.fov, paneA.w / paneA.h, CFG.near, CFG.far);
-  mul(vp, proj, view);
-  gl.useProgram(pMesh);
-  gl.uniformMatrix4fv(pMesh.U("uVP"), false, vp);
-  gl.uniform3f(pMesh.U("uCamPos"), cam.ex, cam.ey, cam.ez);
-  shadeUniforms(pMesh);
-  bindAttr(pMesh, "aPos", bufP, 3);
-  bindAttr(pMesh, "aNor", bufN, 3);
-  bindAttr(pMesh, "aTag", bufT, 1);
-  if (state.wire) { gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1.0, 1.0); }
-  gl.drawArrays(gl.TRIANGLES, 0, MB.tri);
-  if (state.wire) {
-    gl.disable(gl.POLYGON_OFFSET_FILL);
-    gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    gl.useProgram(pLine);
-    gl.uniformMatrix4fv(pLine.U("uVP"), false, vp);
-    gl.uniform3fv(pLine.U("uColor"), PAL.mesh);
-    gl.uniform1f(pLine.U("uAlpha"), 0.62);
-    bindAttr(pLine, "aPos", bufL, 3);
-    gl.drawArrays(gl.LINES, 0, MB.line);
-    gl.disable(gl.BLEND);
+  pass.setViewport(paneA.x, paneA.y, paneA.w, paneA.h, 0, 1);
+  pass.setScissorRect(paneA.x, paneA.y, paneA.w, paneA.h);
+  pass.setPipeline(G.pipeSky);
+  pass.setBindGroup(0, G.bgSky[0]);
+  pass.draw(3);
+  pass.setPipeline(state.wire ? G.pipeMeshOffset : G.pipeMesh);   // Polygon-Offset nur unter dem Drahtgitter
+  pass.setBindGroup(0, G.bgMesh);
+  pass.setBindGroup(1, G.bgShade);
+  if (MB.tri > 0) {
+    pass.setVertexBuffer(0, G.bufP);
+    pass.setVertexBuffer(1, G.bufN);
+    pass.setVertexBuffer(2, G.bufT);
+    pass.draw(MB.tri);
+  }
+  if (state.wire && MB.line > 0) {
+    pass.setPipeline(G.pipeLine);
+    pass.setBindGroup(0, G.bgLine);
+    pass.setVertexBuffer(0, G.bufL);
+    pass.draw(MB.line);
   }
 
   /* ---- pane B : the same solid, never built ---- */
-  gl.viewport(paneB.x, paneB.y, paneB.w, paneB.h);
-  gl.scissor(paneB.x, paneB.y, paneB.w, paneB.h);
-  gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND);
-  sky(paneB);
-  gl.useProgram(pSdf);
-  bindAttr(pSdf, "aPos", quadBuf, 2);
-  gl.uniform2f(pSdf.U("uOrg"), paneB.x, paneB.y);
-  gl.uniform2f(pSdf.U("uSize"), paneB.w, paneB.h);
-  gl.uniform3f(pSdf.U("uCamPos"), cam.ex, cam.ey, cam.ez);
-  gl.uniform3f(pSdf.U("uCamRight"), cam.rx, cam.ry, cam.rz);
-  gl.uniform3f(pSdf.U("uCamUp"), cam.ux, cam.uy, cam.uz);
-  gl.uniform3f(pSdf.U("uCamFwd"), cam.fx, cam.fy, cam.fz);
-  gl.uniform1f(pSdf.U("uTanHalf"), Math.tan(CFG.fov * 0.5));
-  gl.uniform1f(pSdf.U("uAspect"), paneB.w / paneB.h);
-  gl.uniform3f(pSdf.U("uCut"), state.cut.x, state.cut.y, state.cut.z);
-  gl.uniform1f(pSdf.U("uBoxH"), CFG.boxH);
-  gl.uniform1f(pSdf.U("uCutR"), CFG.cutR);
-  gl.uniform1f(pSdf.U("uBlend"), state.blend);
-  gl.uniform1f(pSdf.U("uOp"), state.op);
-  gl.uniform1f(pSdf.U("uHeat"), state.heat ? 1 : 0);
-  gl.uniform1f(pSdf.U("uSurf"), CFG.surf);
-  shadeUniforms(pSdf);
-  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  pass.setViewport(paneB.x, paneB.y, paneB.w, paneB.h, 0, 1);
+  pass.setScissorRect(paneB.x, paneB.y, paneB.w, paneB.h);
+  pass.setPipeline(G.pipeSky);
+  pass.setBindGroup(0, G.bgSky[1]);
+  pass.draw(3);
+  pass.setPipeline(G.pipeSdf);
+  pass.setBindGroup(0, G.bgSdf);
+  pass.setBindGroup(1, G.bgShade);
+  pass.draw(3);
 
-  gl.disable(gl.SCISSOR_TEST);
+  pass.end();
+  device.queue.submit([enc.finish()]);
 }
 
 /* ----------------------------------------------------------------- input */
@@ -1150,21 +1319,38 @@ function tick(now) {
   }
 }
 
-window.addEventListener("resize", layout);
-window.addEventListener("orientationchange", function () { setTimeout(layout, 220); });
-document.addEventListener("visibilitychange", function () { last = 0; });
-
 (function warmUp() {
   for (var i = 0; i < 8; i++) csgSubtract(boxPolys(CFG.boxH),
     spherePolys(0.40 + i * 0.01, 0.22, 0.20, CFG.cutR, 12, 7));
 })();
 
-layout();
-updateCamera();
-requestAnimationFrame(tick);
+/* Start: Gerät holen, Pipelines und Puffer in einem Validierungs-Scope bauen,
+   dann die Schleife. Ohne WebGPU oder bei einem Validierungsfehler übernimmt
+   webgl.html (rueckfall). */
+async function start() {
+  var gpu = await starteWebGPU(canvas);
+  if (!gpu) return;                               // rueckfall() lädt bereits webgl.html
+  device = gpu.device; context = gpu.context; format = gpu.format;
+
+  device.pushErrorScope("validation");
+  await baueGpu();
+  var fehler = await device.popErrorScope();
+  if (fehler) { console.error("WebGPU validation: " + fehler.message); return rueckfall("validation error"); }
+
+  window.addEventListener("resize", layout);
+  window.addEventListener("orientationchange", function () { setTimeout(layout, 220); });
+  document.addEventListener("visibilitychange", function () { last = 0; });
+
+  layout();
+  updateCamera();
+  requestAnimationFrame(tick);
+}
+start().catch(function (err) {
+  console.error("WebGPU start failed: " + (err && err.message ? err.message : err));
+  rueckfall("start failed");
+});
 
 })();
 </script>
-<!--CONTENT-END-->
-</body>
-</html>
+
+</body></html>

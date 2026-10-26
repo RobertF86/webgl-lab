@@ -1,18 +1,7 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#0E1317" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#E9EEF0" media="(prefers-color-scheme: light)">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="description" content="A brass test mass loose inside an open-topped glass box. Drag the box; the ball answers with real rigid-body physics.">
-<!--CONTENT-START-->
-<title>Ball in a Glass Box</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<!doctype html><html lang="en" data-theme="dark"><head><meta charset=utf-8>
+<title>Ball in a Glass Box</title><meta name=viewport content="width=device-width,initial-scale=1"></head><body>
+
+<link rel="stylesheet" href="../fonts/fonts.css">
 <style>
 /* ---- tokens : light is the bare :root, dark redefines only values ---- */
 :root{
@@ -194,19 +183,34 @@ input[type=range]:focus-visible{ outline:2px solid var(--brass); outline-offset:
 #fallback strong{ display:block; margin-bottom:10px; color:var(--text);
   font-size:15px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; }
 
+
+/* ---- Kompaktstufe: Handy und Einbettung im Rahmen. Nur kleine Fenster,
+   der Desktop bleibt wie er ist. ---- */
+@media (max-width: 640px), (max-height: 460px){
+  .plate p, .telemetry, .hint{ display:none; }
+  .plate h1{ font-size:12px; }
+  .plate .rule{ display:none; }
+  .hud{ padding:8px; }
+  .hud.bc{ gap:6px; }
+  .bar{ padding:3px; gap:3px; }
+  button{ font-size:10px; padding:6px 9px; min-height:30px; letter-spacing:.08em; }
+  .tuner{ max-height:min(52vh, 320px); padding:9px 10px; gap:6px; }
+  .row label, .row output{ font-size:10px; }
+  input[type=range]{ height:18px; }
+}
 @media (prefers-reduced-motion: reduce){
   *{ transition-duration:.01ms !important; }
 }
 </style>
-</head>
-<body>
+
+
 <div id="stage"><canvas id="gl" aria-label="Interactive physics simulation: a brass ball inside an open-topped glass box"></canvas></div>
 
 <div class="hud tl">
   <div class="plate">
     <h1>Ball in a Glass Box</h1>
     <div class="rule"></div>
-    <p>WebGL &middot; rigid body &middot; 240&nbsp;Hz</p>
+    <p>WebGPU &middot; rigid body &middot; 240&nbsp;Hz</p>
   </div>
 </div>
 
@@ -243,8 +247,8 @@ input[type=range]:focus-visible{ outline:2px solid var(--brass); outline-offset:
 
 <div id="fallback">
   <div>
-    <strong>WebGL unavailable</strong>
-    <p id="fallbackMsg">This browser could not start a WebGL context. Try Safari or Chrome with hardware acceleration enabled.</p>
+    <strong>WebGPU unavailable</strong>
+    <p id="fallbackMsg">This browser could not start a WebGPU context. Try Chrome, Edge or Safari with hardware acceleration enabled.</p>
   </div>
 </div>
 
@@ -254,13 +258,18 @@ input[type=range]:focus-visible{ outline:2px solid var(--brass); outline-offset:
 
 /* =========================================================================
    Ball in a Glass Box
-   Raw WebGL 1.0, no libraries. A brass test mass tumbles inside an
+   Raw WebGPU, no libraries. A brass test mass tumbles inside an
    open-topped acrylic box that the viewer drags around by touch.
 
    Sim runs at a fixed 240 Hz on its own accumulator, decoupled from the
    frame rate. Contacts are sphere-vs-AABB against the five wall slabs, in
    the box's local frame, so the rim, the outer faces and the inside all
    collide correctly and the ball can genuinely be thrown out of the top.
+
+   Portierung (September 2026): HTML, CSS, Bedienung, Physik und Telemetrie
+   sind aus der WebGL-Fassung unveraendert uebernommen; neu ist nur die
+   Darstellung (WGSL, ein Render-Pass mit MSAA 4x, Tiefe 0…1). Fehlt WebGPU
+   oder scheitert die Pipeline-Anlage, laedt die Seite webgl.html#fallback.
    ========================================================================= */
 
 /* ---------------------------------------------------------------- config */
@@ -291,6 +300,17 @@ function perspective(o, fovy, aspect, near, far) {
   o.fill(0);
   o[0] = f / aspect; o[5] = f; o[10] = (far + near) * nf; o[11] = -1; o[14] = 2 * far * near * nf;
   return o;
+}
+
+// WebGPU-Clip-Raum: die Tiefe liegt in [0, 1], WebGL hatte [-1, 1]. Die dritte
+// Zeile der spaltenweise gespeicherten Projektion wird dafuer umgerechnet
+// (z' = 0.5 z + 0.5 w); alles andere bleibt, also auch Kamera und Bildwinkel.
+function tiefe01(p) {
+  p[2]  = 0.5 * p[2]  + 0.5 * p[3];
+  p[6]  = 0.5 * p[6]  + 0.5 * p[7];
+  p[10] = 0.5 * p[10] + 0.5 * p[11];
+  p[14] = 0.5 * p[14] + 0.5 * p[15];
+  return p;
 }
 
 function lookAt(o, ex, ey, ez, cx, cy, cz) {
@@ -357,68 +377,58 @@ function qm3(o, q) {
   return o;
 }
 
-/* ------------------------------------------------------------ gl context */
+/* --------------------------------------------------------- WebGPU-Start */
 var canvas = document.getElementById("gl");
-var gl = null;
-try {
-  var opts = { antialias: true, alpha: false, depth: true, stencil: false,
-               premultipliedAlpha: false, powerPreference: "high-performance" };
-  gl = canvas.getContext("webgl", opts) || canvas.getContext("experimental-webgl", opts);
-} catch (err) { gl = null; }
+var device = null, context = null, format = null;
 
-if (!gl) {
+// Das vorhandene Hinweis-Overlay, nur noch fuer Geraeteverlust zur Laufzeit.
+function zeigeHinweis(text) {
+  document.getElementById("fallbackMsg").textContent = text;
   document.getElementById("fallback").classList.add("show");
-  return;
 }
 
-function compile(type, src, label) {
-  var s = gl.createShader(type);
-  gl.shaderSource(s, src);
-  gl.compileShader(s);
-  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
-    throw new Error(label + ": " + gl.getShaderInfoLog(s));
-  }
-  return s;
+function rueckfall(grund) {
+	console.error("WebGPU unavailable (" + grund + "), switching to the WebGL version");
+	location.replace("webgl.html#fallback=" + encodeURIComponent(grund));
+}
+async function starteWebGPU(canvas) {
+	if (!navigator.gpu) return rueckfall(window.isSecureContext ? "no navigator.gpu" : "insecure context, WebGPU needs https or localhost");
+	var adapter = await navigator.gpu.requestAdapter();
+	if (!adapter) return rueckfall("no adapter");
+	var device = await adapter.requestDevice();
+	device.addEventListener("uncapturederror", function (e) { console.error("WebGPU:", e.error.message); });
+	device.lost.then(function (info) { if (info.reason !== "destroyed") zeigeHinweis("GPU device lost: " + info.message); });
+	var context = canvas.getContext("webgpu");
+	var format = navigator.gpu.getPreferredCanvasFormat();
+	context.configure({ device: device, format: format, alphaMode: "opaque" });
+	return { adapter: adapter, device: device, context: context, format: format };
 }
 
-function program(vsrc, fsrc, label) {
-  var p = gl.createProgram();
-  gl.attachShader(p, compile(gl.VERTEX_SHADER, vsrc, label + " vs"));
-  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fsrc, label + " fs"));
-  gl.linkProgram(p);
-  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
-    throw new Error(label + " link: " + gl.getProgramInfoLog(p));
-  }
-  // cache every active uniform + attribute location on the program object
-  p.u = {}; p.a = {};
-  var n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS), i, info;
-  for (i = 0; i < n; i++) { info = gl.getActiveUniform(p, i); p.u[info.name] = gl.getUniformLocation(p, info.name); }
-  n = gl.getProgramParameter(p, gl.ACTIVE_ATTRIBUTES);
-  for (i = 0; i < n; i++) { info = gl.getActiveAttrib(p, i); p.a[info.name] = gl.getAttribLocation(p, info.name); }
-  return p;
+/* ---------------------------------------------------------------- Puffer */
+// writeBuffer verlangt Datenlaengen als Vielfache von 4 Byte; Float32 passt
+// immer, der Uint16-Indexpuffer wird bei ungerader Anzahl um einen Eintrag
+// verlaengert (der Draw nutzt weiterhin nur count Indizes).
+function puffer(arr, usage, label) {
+  var b = device.createBuffer({ label: label, size: arr.byteLength, usage: usage | GPUBufferUsage.COPY_DST });
+  device.queue.writeBuffer(b, 0, arr);
+  return b;
 }
 
-function mesh(positions, normals, indices) {
-  var m = {
-    pos: gl.createBuffer(), nor: gl.createBuffer(), idx: gl.createBuffer(), count: indices.length
+function mesh(positions, normals, indices, label) {
+  var idx = new Uint16Array(indices.length + (indices.length & 1));
+  idx.set(indices);
+  return {
+    pos: puffer(new Float32Array(positions), GPUBufferUsage.VERTEX, label + " pos"),
+    nor: puffer(new Float32Array(normals),   GPUBufferUsage.VERTEX, label + " nor"),
+    idx: puffer(idx, GPUBufferUsage.INDEX, label + " idx"),
+    count: indices.length
   };
-  gl.bindBuffer(gl.ARRAY_BUFFER, m.pos);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
-  gl.bindBuffer(gl.ARRAY_BUFFER, m.nor);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(normals), gl.STATIC_DRAW);
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, m.idx);
-  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
-  return m;
 }
 
-function bindMesh(prog, m) {
-  gl.bindBuffer(gl.ARRAY_BUFFER, m.pos);
-  gl.enableVertexAttribArray(prog.a.aPos);
-  gl.vertexAttribPointer(prog.a.aPos, 3, gl.FLOAT, false, 0, 0);
-  gl.bindBuffer(gl.ARRAY_BUFFER, m.nor);
-  gl.enableVertexAttribArray(prog.a.aNor);
-  gl.vertexAttribPointer(prog.a.aNor, 3, gl.FLOAT, false, 0, 0);
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, m.idx);
+function setMesh(pass, m) {
+  pass.setVertexBuffer(0, m.pos);
+  pass.setVertexBuffer(1, m.nor);
+  pass.setIndexBuffer(m.idx, "uint16");
 }
 
 /* -------------------------------------------------------------- geometry */
@@ -447,7 +457,7 @@ function buildCube() {
     }
     I.push(base, base + 1, base + 2, base, base + 2, base + 3);
   }
-  return mesh(P, N, I);
+  return mesh(P, N, I, "cube");
 }
 
 // unit-radius UV sphere
@@ -467,7 +477,7 @@ function buildSphere(segU, segV) {
       I.push(a, b, a + 1, a + 1, b, b + 1);
     }
   }
-  return mesh(P, N, I);
+  return mesh(P, N, I, "sphere");
 }
 
 // flat quad in the XZ plane, side 1, +Y normal
@@ -475,160 +485,168 @@ function buildPlane() {
   return mesh(
     [-0.5, 0, -0.5,  0.5, 0, -0.5,  0.5, 0, 0.5, -0.5, 0, 0.5],
     [0, 1, 0,  0, 1, 0,  0, 1, 0,  0, 1, 0],
-    [0, 2, 1, 0, 3, 2]
+    [0, 2, 1, 0, 3, 2],
+    "plane"
   );
 }
 
-var CUBE   = buildCube();
-var SPHERE = buildSphere(56, 34);
-var PLANE  = buildPlane();
+var CUBE = null, SPHERE = null, PLANE = null;   // entstehen in init(), sobald das Geraet da ist
 
 /* --------------------------------------------------------------- shaders */
-var VS_LIT = [
-"precision highp float;",
-"attribute vec3 aPos;",
-"attribute vec3 aNor;",
-"uniform mat4 uVP;",
-"uniform mat4 uModel;",
-"uniform mat3 uNMat;",
-"varying vec3 vW;",
-"varying vec3 vN;",
-"varying vec3 vL;",
-"void main(){",
-"  vec4 w = uModel * vec4(aPos, 1.0);",
-"  vW = w.xyz;",
-"  vN = uNMat * aNor;",
-"  vL = aPos;",
-"  gl_Position = uVP * w;",
-"}"
-].join("\n");
+// Ein Shader fuer alle beleuchteten Objekte, wie in der WebGL-Fassung ueber
+// einen Modus verzweigt. Die Byte-Offsets im Kommentar sind die Offsets, mit
+// denen schreibeBild() und schreibeObjekt() die Uniform-Puffer fuellen.
+var WGSL_LIT = `
+struct Frame {
+  vp      : mat4x4<f32>,   // Byte 0
+  camR    : vec4<f32>,     // Byte 64   xyz Kamera, w Kugelradius
+  key     : vec4<f32>,     // Byte 80
+  fill    : vec4<f32>,     // Byte 96
+  ldir    : vec4<f32>,     // Byte 112
+  glowCol : vec4<f32>,     // Byte 128
+  boxProj : vec4<f32>,     // Byte 144  Welt x, z, Weichheit, Staerke   (Modus 3)
+  boxHalf : vec4<f32>,     // Byte 160  xy halbe Grundflaeche des Kastens (Modus 3)
+};                         // 176 Byte
 
-var FS_LIT = [
-"precision highp float;",
-"varying vec3 vW;",
-"varying vec3 vN;",
-"varying vec3 vL;",
-"uniform vec3  uCam;",
-"uniform vec3  uBase;",
-"uniform vec3  uTint;",
-"uniform vec3  uScale;",
-"uniform float uAlpha;",
-"uniform float uMode;",     // 0 glass wall | 1 box floor | 2 ball | 3 ground
-"uniform vec3  uKey;",
-"uniform vec3  uFill;",
-"uniform vec3  uLdir;",
-"uniform float uGlow;",
-"uniform vec3  uGlowCol;",
-"uniform vec3  uBallProj;", // box-local x, z, shadow strength  (mode 1)
-"uniform vec4  uBoxProj;",  // world x, z, softness, strength   (mode 3)
-"uniform vec2  uBoxHalf;",  // box footprint half-extents       (mode 3)
-"uniform float uR;",
-"",
-"vec3 shoulder(vec3 c){",
-"  vec3 k = vec3(0.82);",
-"  vec3 d = max(c - k, vec3(0.0));",
-"  return min(c, k) + d / (1.0 + d / (1.0 - k));",
-"}",
-"",
-"void main(){",
-"  vec3 N = normalize(vN);",
-"  vec3 V = normalize(uCam - vW);",
-"  vec3 L = normalize(uLdir);",
-"  vec3 H = normalize(L + V);",
-"  float ndl = max(dot(N, L), 0.0);",
-"  float ndv = max(dot(N, V), 0.0);",
-"  float ndh = max(dot(N, H), 0.0);",
-"  float fres = pow(1.0 - ndv, 3.0);",
-"  vec3  lp = vL * uScale;",
-"  vec3  col;",
-"  float alpha = uAlpha;",
-"",
-"  if (uMode < 0.5) {",
-/* ---- acrylic wall: thin, mostly transparent, bright at grazing angles */
-"    float spec = pow(ndh, 120.0);",
-"    col  = uBase * uFill * 0.90;",
-"    col += uBase * uKey * ndl * 0.32;",
-"    col += uKey * spec * 1.30;",
-"    col += uBase * fres * 0.70;",
-"    col += uGlowCol * uGlow * (0.35 + 0.9 * fres);",
-"    alpha = clamp(uAlpha + fres * 0.46 + spec * 0.60 + ndl * 0.24 + uGlow * 0.30, 0.0, 1.0);",
-"",
-"  } else if (uMode < 1.5) {",
-/* ---- box floor: milled plate with a fine grid, plus the ball's shadow */
-"    vec3 albedo = uBase;",
-"    if (N.y > 0.5) {",
-"      vec2 q = abs(fract(lp.xz / 0.148 - 0.5) - 0.5) * 0.148;",
-"      float d = min(q.x, q.y);",
-"      float line = 1.0 - smoothstep(0.0035, 0.0125, d);",
-"      albedo = mix(albedo, uTint, line * 0.42);",
-"      float bd = length(lp.xz - uBallProj.xy);",
-"      float sh = (1.0 - smoothstep(uR * 0.55, uR * 2.05, bd)) * uBallProj.z;",
-"      albedo *= mix(1.0, 0.30, sh);",
-"    }",
-"    col  = albedo * (uFill * (0.40 + 0.60 * max(N.y, 0.0)) * 0.90 + uKey * ndl * 1.02);",
-"    col += uKey * pow(ndh, 34.0) * 0.12;",
-"    col += uGlowCol * uGlow * 0.5;",
-"",
-"  } else if (uMode < 2.5) {",
-/* ---- brass reference sphere: three orthogonal great circles so spin reads */
-"    vec3 p = normalize(vL);",
-"    float b = max(max(smoothstep(0.098, 0.052, abs(p.y)),",
-"                      smoothstep(0.098, 0.052, abs(p.x))),",
-"                      smoothstep(0.098, 0.052, abs(p.z)));",
-"    vec3 albedo = mix(uBase, uTint, b);",
-"    float sheen = 0.5 + 0.5 * N.y;",
-"    col  = albedo * (uFill * (0.30 + 0.70 * sheen) * 0.80 + uKey * ndl * 1.32);",
-"    col += uKey * pow(ndh, 30.0) * 1.45 * (1.0 - b * 0.70);",
-"    col += uBase * fres * 0.32;",
-"",
-"  } else {",
-/* ---- studio ground: a soft pool of light carrying the box's cast shadow */
-"    float r = length(vW.xz - vec2(0.0)) / max(uScale.x * 0.5, 0.001);",
-"    float pool = 1.0 - smoothstep(0.10, 0.92, r);",
-"    vec2 d = abs(vW.xz - uBoxProj.xy) - uBoxHalf;",
-"    float sd = length(max(d, vec2(0.0))) + min(max(d.x, d.y), 0.0);",
-"    float sh = (1.0 - smoothstep(-uBoxProj.z * 0.30, uBoxProj.z, sd)) * uBoxProj.w;",
-"    col = mix(uBase, uTint, sh);",
-"    alpha = pool * mix(uAlpha, 1.0, sh * 0.8);",
-"  }",
-"",
-"  gl_FragColor = vec4(shoulder(col), alpha);",
-"}"
-].join("\n");
+struct Obj {
+  model    : mat4x4<f32>,  // Byte 0
+  nmat     : mat3x3<f32>,  // Byte 64   drei Spalten zu je 16 Byte
+  base     : vec4<f32>,    // Byte 112
+  tint     : vec4<f32>,    // Byte 128
+  scale    : vec4<f32>,    // Byte 144  xyz Skalierung, w Alpha
+  ballProj : vec4<f32>,    // Byte 160  Kasten-lokal x, z, Schattenstaerke (Modus 1)
+  modeGlow : vec4<f32>,    // Byte 176  x Modus: 0 Glaswand | 1 Kastenboden | 2 Kugel | 3 Grund; y Glow
+};                         // 192 Byte, Schrittweite im Puffer 256
 
-var VS_BG = [
-"precision highp float;",
-"attribute vec2 aPos;",
-"varying vec2 vUv;",
-"void main(){ vUv = aPos * 0.5 + 0.5; gl_Position = vec4(aPos, 0.0, 1.0); }"
-].join("\n");
+@group(0) @binding(0) var<uniform> F : Frame;
+@group(0) @binding(1) var<uniform> O : Obj;
 
-var FS_BG = [
-"precision highp float;",
-"varying vec2 vUv;",
-"uniform vec3 uTop;",
-"uniform vec3 uBot;",
-"void main(){",
-"  vec3 c = mix(uBot, uTop, pow(clamp(vUv.y, 0.0, 1.0), 0.85));",
-"  float v = distance(vUv, vec2(0.5, 0.55));",
-"  c *= 1.0 - smoothstep(0.28, 0.95, v) * 0.42;",
-"  gl_FragColor = vec4(c, 1.0);",
-"}"
-].join("\n");
+struct VOut {
+  @builtin(position) clip : vec4<f32>,
+  @location(0) w : vec3<f32>,
+  @location(1) n : vec3<f32>,
+  @location(2) l : vec3<f32>,
+};
 
-var progLit, progBg, bgBuf;
-try {
-  progLit = program(VS_LIT, FS_LIT, "lit");
-  progBg  = program(VS_BG, FS_BG, "bg");
-} catch (err) {
-  document.getElementById("fallbackMsg").textContent =
-    "This browser started WebGL but rejected the shaders. " + err.message;
-  document.getElementById("fallback").classList.add("show");
-  return;
+@vertex fn vs(@location(0) pos : vec3<f32>, @location(1) nor : vec3<f32>) -> VOut {
+  var o : VOut;
+  let w = O.model * vec4<f32>(pos, 1.0);
+  o.w = w.xyz;
+  o.n = O.nmat * nor;
+  o.l = pos;
+  o.clip = F.vp * w;
+  return o;
 }
-bgBuf = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, bgBuf);
-gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+
+fn shoulder(c : vec3<f32>) -> vec3<f32> {
+  let k = vec3<f32>(0.82);
+  let d = max(c - k, vec3<f32>(0.0));
+  return min(c, k) + d / (1.0 + d / (1.0 - k));
+}
+
+@fragment fn fs(v : VOut) -> @location(0) vec4<f32> {
+  let N = normalize(v.n);
+  let V = normalize(F.camR.xyz - v.w);
+  let L = normalize(F.ldir.xyz);
+  let H = normalize(L + V);
+  let ndl = max(dot(N, L), 0.0);
+  let ndv = max(dot(N, V), 0.0);
+  let ndh = max(dot(N, H), 0.0);
+  let fres = pow(1.0 - ndv, 3.0);
+  let lp = v.l * O.scale.xyz;
+  let base = O.base.xyz;
+  let tint = O.tint.xyz;
+  let key = F.key.xyz;
+  let fill = F.fill.xyz;
+  let mode = O.modeGlow.x;
+  let glow = O.modeGlow.y;
+  var col = vec3<f32>(0.0);
+  var alpha = O.scale.w;
+
+  if (mode < 0.5) {
+    // Acrylwand: duenn, fast durchsichtig, hell bei streifendem Blick
+    let spec = pow(ndh, 120.0);
+    col  = base * fill * 0.90;
+    col += base * key * ndl * 0.32;
+    col += key * spec * 1.30;
+    col += base * fres * 0.70;
+    col += F.glowCol.xyz * glow * (0.35 + 0.9 * fres);
+    alpha = clamp(O.scale.w + fres * 0.46 + spec * 0.60 + ndl * 0.24 + glow * 0.30, 0.0, 1.0);
+
+  } else if (mode < 1.5) {
+    // Kastenboden: gefraeste Platte mit feinem Raster, dazu der Kugelschatten
+    var albedo = base;
+    if (N.y > 0.5) {
+      let q = abs(fract(lp.xz / 0.148 - 0.5) - 0.5) * 0.148;
+      let d = min(q.x, q.y);
+      let line = 1.0 - smoothstep(0.0035, 0.0125, d);
+      albedo = mix(albedo, tint, line * 0.42);
+      let bd = length(lp.xz - O.ballProj.xy);
+      let sh = (1.0 - smoothstep(F.camR.w * 0.55, F.camR.w * 2.05, bd)) * O.ballProj.z;
+      albedo *= mix(1.0, 0.30, sh);
+    }
+    col  = albedo * (fill * (0.40 + 0.60 * max(N.y, 0.0)) * 0.90 + key * ndl * 1.02);
+    col += key * pow(ndh, 34.0) * 0.12;
+    col += F.glowCol.xyz * glow * 0.5;
+
+  } else if (mode < 2.5) {
+    // Messingkugel: drei Grosskreise, damit die Drehung sichtbar ist. GLSL
+    // hatte smoothstep mit vertauschten Kanten; hier explizit 1 - smoothstep,
+    // das ist dieselbe Kurve.
+    let p = normalize(v.l);
+    let b = max(max(1.0 - smoothstep(0.052, 0.098, abs(p.y)),
+                    1.0 - smoothstep(0.052, 0.098, abs(p.x))),
+                    1.0 - smoothstep(0.052, 0.098, abs(p.z)));
+    let albedo = mix(base, tint, b);
+    let sheen = 0.5 + 0.5 * N.y;
+    col  = albedo * (fill * (0.30 + 0.70 * sheen) * 0.80 + key * ndl * 1.32);
+    col += key * pow(ndh, 30.0) * 1.45 * (1.0 - b * 0.70);
+    col += base * fres * 0.32;
+
+  } else {
+    // Studioboden: weicher Lichtteppich mit dem Schlagschatten des Kastens
+    let r = length(v.w.xz - vec2<f32>(0.0)) / max(O.scale.x * 0.5, 0.001);
+    let pool = 1.0 - smoothstep(0.10, 0.92, r);
+    let d = abs(v.w.xz - F.boxProj.xy) - F.boxHalf.xy;
+    let sd = length(max(d, vec2<f32>(0.0))) + min(max(d.x, d.y), 0.0);
+    let sh = (1.0 - smoothstep(-F.boxProj.z * 0.30, F.boxProj.z, sd)) * F.boxProj.w;
+    col = mix(base, tint, sh);
+    alpha = pool * mix(O.scale.w, 1.0, sh * 0.8);
+  }
+
+  return vec4<f32>(shoulder(col), alpha);
+}
+`;
+
+// Hintergrund: ein bildschirmfuellendes Dreieck. Die uv kommt aus der
+// Clip-Position (in beiden APIs y nach oben), nicht aus @builtin(position),
+// darum ist hier nichts zu spiegeln.
+var WGSL_BG = `
+struct Bg {
+  top : vec4<f32>,   // Byte 0
+  bot : vec4<f32>,   // Byte 16
+};                   // 32 Byte
+@group(0) @binding(0) var<uniform> B : Bg;
+
+struct BgOut {
+  @builtin(position) clip : vec4<f32>,
+  @location(0) uv : vec2<f32>,
+};
+
+@vertex fn vs(@location(0) pos : vec2<f32>) -> BgOut {
+  var o : BgOut;
+  o.uv = pos * 0.5 + 0.5;
+  o.clip = vec4<f32>(pos, 0.0, 1.0);
+  return o;
+}
+
+@fragment fn fs(v : BgOut) -> @location(0) vec4<f32> {
+  var c = mix(B.bot.xyz, B.top.xyz, pow(clamp(v.uv.y, 0.0, 1.0), 0.85));
+  let d = distance(v.uv, vec2<f32>(0.5, 0.55));
+  c *= 1.0 - smoothstep(0.28, 0.95, d) * 0.42;
+  return vec4<f32>(c, 1.0);
+}
+`;
 
 /* ------------------------------------------------------- palette binding */
 // The scene reads its colours from the same CSS custom properties as the
@@ -835,14 +853,6 @@ var cam = { dist: 4, ex: 0, ey: 1, ez: 4, wpp: 0.002 };
 var bounds = { x: 0.8, up: 0.8, dn: 0.4, z: CFG.dragZ };
 var W = 1, H = 1, cssH = 1;
 
-// uniform locations, defaulted to null so an optimised-out name is a no-op
-function L(p, n) { return (p.u[n] === undefined) ? null : p.u[n]; }
-var LU = {}, BU = {};
-["uVP","uModel","uNMat","uCam","uBase","uTint","uScale","uAlpha","uMode","uKey",
- "uFill","uLdir","uGlow","uGlowCol","uBallProj","uBoxProj","uBoxHalf","uR"]
-  .forEach(function (n) { LU[n] = L(progLit, n); });
-["uTop","uBot"].forEach(function (n) { BU[n] = L(progBg, n); });
-
 function clampWant() {
   want.x = Math.max(-bounds.x,  Math.min(bounds.x,  want.x));
   want.y = Math.max(-bounds.dn, Math.min(bounds.up, want.y));
@@ -858,6 +868,7 @@ function resize() {
   H = Math.max(1, Math.round(ch * dpr));
   if (canvas.width !== W)  canvas.width = W;
   if (canvas.height !== H) canvas.height = H;
+  // Tiefen- und MSAA-Textur folgen der neuen Groesse beim naechsten draw()
 
   var aspect = W / H, tanH = Math.tan(CFG.fov * 0.5);
   // pull back far enough to frame the box plus room to drag it, but never so
@@ -878,6 +889,7 @@ function resize() {
   cam.wpp = (2 * cam.dist * tanH) / ch;     // world units per CSS pixel at the box
 
   perspective(proj, CFG.fov, aspect, 0.1, 60);
+  tiefe01(proj);
   lookAt(view, cam.ex, cam.ey, cam.ez, 0, CFG.frameY, 0);
   mul(vp, proj, view);
   clampWant();
@@ -989,91 +1001,138 @@ slider("sG", "oG", "g",  function (v) { return v.toFixed(1) + " m/s²"; });
 slider("sE", "oE", "e",  function (v) { return v.toFixed(2); });
 slider("sF", "oF", "mu", function (v) { return v.toFixed(2); });
 
-/* ------------------------------------------------------------------- draw */
-function setObj(mode, base, tint, sx, sy, sz, alpha, glow) {
-  gl.uniform1f(LU.uMode, mode);
-  gl.uniform3fv(LU.uBase, base);
-  gl.uniform3fv(LU.uTint, tint);
-  gl.uniform3f(LU.uScale, sx, sy, sz);
-  gl.uniform1f(LU.uAlpha, alpha);
-  gl.uniform1f(LU.uGlow, glow);
+/* ------------------------------------------------ Pipelines und Uniforms */
+// Ein Render-Pass je Bild: Hintergrund, Studioboden (geblendet, schreibt
+// Tiefe), Kastenboden und Kugel (deckend), dann die vier Glaswaende von
+// hinten nach vorn (geblendet, ohne Tiefenschreiben) - dieselbe Reihenfolge
+// und dieselben Zustaende wie in der WebGL-Fassung, nur als drei Pipelines.
+var pipeBg = null, pipeGround = null, pipeOpaque = null, pipeGlass = null;
+var litBind = null, bgBind = null;
+var frameBuf = null, objBuf = null, bgBuf = null, bgVerts = null;
+
+var FRAME_FLOATS = 44;                    // 176 Byte, siehe struct Frame
+var OBJ_STRIDE = 256, OBJ_N = 7;          // Grund, Kastenboden, Kugel, vier Waende
+var frameData = new Float32Array(FRAME_FLOATS);
+var objData   = new Float32Array(OBJ_STRIDE / 4 * OBJ_N);
+var bgData    = new Float32Array(8);
+var objOffsets = new Uint32Array(OBJ_N);  // dynamische Offsets in den Objektpuffer
+for (var oi = 0; oi < OBJ_N; oi++) objOffsets[oi] = oi * OBJ_STRIDE;
+
+var msaaTex = null, depthTex = null, msaaView = null, depthView = null;
+var zielW = 0, zielH = 0;
+var verloren = false;
+
+var BLEND = {
+  color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+  alpha: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" }
+};
+
+async function shaderModul(code, label) {
+  var m = device.createShaderModule({ label: label, code: code });
+  var info = await m.getCompilationInfo();
+  for (var i = 0; i < info.messages.length; i++) {
+    var msg = info.messages[i];
+    var text = "WGSL " + label + " " + msg.type + " (line " + msg.lineNum + ":" + msg.linePos + "): " + msg.message;
+    if (msg.type === "error") console.error(text); else console.warn(text);
+  }
+  return m;
 }
 
-var order = [0, 1, 2, 3], key = [0, 0, 0, 0];
+// liefert ein Promise: die Pipelines werden asynchron und parallel uebersetzt,
+// das verkuerzt den kalten Start deutlich gegenueber createRenderPipeline
+function litPipeline(label, layout, modul, blend, depthWrite) {
+  var target = { format: format };
+  if (blend) target.blend = BLEND;
+  return device.createRenderPipelineAsync({
+    label: label,
+    layout: layout,
+    vertex: { module: modul, entryPoint: "vs", buffers: [
+      { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+      { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] }
+    ] },
+    fragment: { module: modul, entryPoint: "fs", targets: [target] },
+    primitive: { topology: "triangle-list", cullMode: "back", frontFace: "ccw" },
+    depthStencil: { format: "depth24plus", depthWriteEnabled: depthWrite, depthCompare: "less" },
+    multisample: { count: 4 }
+  });
+}
 
-function draw() {
-  gl.viewport(0, 0, W, H);
+// MSAA-Farb- und Tiefentextur in Canvas-Groesse; bei Groessenaenderung neu,
+// die alten werden freigegeben.
+function sichereZiele() {
+  if (msaaTex && zielW === W && zielH === H) return;
+  if (msaaTex) msaaTex.destroy();
+  if (depthTex) depthTex.destroy();
+  msaaTex = device.createTexture({ label: "msaa", size: [W, H], sampleCount: 4, format: format,
+                                   usage: GPUTextureUsage.RENDER_ATTACHMENT });
+  depthTex = device.createTexture({ label: "depth", size: [W, H], sampleCount: 4, format: "depth24plus",
+                                    usage: GPUTextureUsage.RENDER_ATTACHMENT });
+  msaaView = msaaTex.createView();
+  depthView = depthTex.createView();
+  zielW = W; zielH = H;
+}
 
-  /* backdrop: a full-screen triangle, no depth involvement */
-  gl.disable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE); gl.disable(gl.BLEND);
-  gl.depthMask(false);
-  gl.useProgram(progBg);
-  gl.bindBuffer(gl.ARRAY_BUFFER, bgBuf);
-  gl.enableVertexAttribArray(progBg.a.aPos);
-  gl.vertexAttribPointer(progBg.a.aPos, 2, gl.FLOAT, false, 0, 0);
-  gl.uniform3fv(BU.uTop, PAL.top);
-  gl.uniform3fv(BU.uBot, PAL.bot);
-  gl.drawArrays(gl.TRIANGLES, 0, 3);
+// Objekt-Uniforms an festen Byte-Offsets (siehe struct Obj), ein Slot je Objekt
+function schreibeObjekt(slot, mdl, nm, base, tint, sx, sy, sz, alpha, mode, glow, bpx, bpz, bps) {
+  var o = slot * (OBJ_STRIDE / 4);
+  objData.set(mdl, o);                                                          // model    @ 0
+  objData[o + 16] = nm[0]; objData[o + 17] = nm[1]; objData[o + 18] = nm[2];    // nmat     @ 64
+  objData[o + 20] = nm[3]; objData[o + 21] = nm[4]; objData[o + 22] = nm[5];
+  objData[o + 24] = nm[6]; objData[o + 25] = nm[7]; objData[o + 26] = nm[8];
+  objData[o + 28] = base[0]; objData[o + 29] = base[1]; objData[o + 30] = base[2];   // base @ 112
+  objData[o + 32] = tint[0]; objData[o + 33] = tint[1]; objData[o + 34] = tint[2];   // tint @ 128
+  objData[o + 36] = sx; objData[o + 37] = sy; objData[o + 38] = sz; objData[o + 39] = alpha; // scale @ 144
+  objData[o + 40] = bpx; objData[o + 41] = bpz; objData[o + 42] = bps;         // ballProj @ 160
+  objData[o + 44] = mode; objData[o + 45] = glow;                               // modeGlow @ 176
+}
 
-  gl.depthMask(true);
-  gl.clear(gl.DEPTH_BUFFER_BIT);
-  gl.enable(gl.DEPTH_TEST);
-  gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK);
-
-  gl.useProgram(progLit);
-  gl.uniformMatrix4fv(LU.uVP, false, vp);
-  gl.uniform3f(LU.uCam, cam.ex, cam.ey, cam.ez);
-  gl.uniform3fv(LU.uKey, PAL.key);
-  gl.uniform3fv(LU.uFill, PAL.fill);
-  gl.uniform3fv(LU.uGlowCol, PAL.brass);
-  gl.uniform3f(LU.uLdir, LDIR[0], LDIR[1], LDIR[2]);
-  gl.uniform1f(LU.uR, CFG.R);
-  // every cube/plane here is axis-aligned, so an identity normal matrix is
-  // exact once the fragment shader renormalises
-  gl.uniformMatrix3fv(LU.uNMat, false, IDENT3);
-
-  /* studio ground with the box's cast shadow */
+// Bild-Uniforms an festen Byte-Offsets (siehe struct Frame)
+function schreibeBild() {
+  frameData.set(vp, 0);                                                         // vp       @ 0
+  frameData[16] = cam.ex; frameData[17] = cam.ey; frameData[18] = cam.ez; frameData[19] = CFG.R; // camR @ 64
+  frameData[20] = PAL.key[0];   frameData[21] = PAL.key[1];   frameData[22] = PAL.key[2];   // key     @ 80
+  frameData[24] = PAL.fill[0];  frameData[25] = PAL.fill[1];  frameData[26] = PAL.fill[2];  // fill    @ 96
+  frameData[28] = LDIR[0];      frameData[29] = LDIR[1];      frameData[30] = LDIR[2];      // ldir    @ 112
+  frameData[32] = PAL.brass[0]; frameData[33] = PAL.brass[1]; frameData[34] = PAL.brass[2]; // glowCol @ 128
   // shadow softness follows the gap under the box, so setting it down on the
   // floor tightens the contact instead of leaving a permanent soft blob
   var gap = Math.max(0.02, box.y - (CFG.hy + CFG.t) - CFG.groundY);
-  gl.enable(gl.BLEND);
-  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-  gl.uniform4f(LU.uBoxProj, box.x, box.z, 0.06 + gap * 0.44,
-               Math.max(0.05, Math.min(0.78, 0.78 - gap * 0.46)));
-  gl.uniform2f(LU.uBoxHalf, CFG.outW * 0.92, CFG.outD * 0.92);
-  trs(model, 0, CFG.groundY, 0, GSIZE, 1, GSIZE);
-  gl.uniformMatrix4fv(LU.uModel, false, model);
-  setObj(3, PAL.grnd, PAL.shade, GSIZE, 1, GSIZE, 0.88, 0);
-  bindMesh(progLit, PLANE);
-  gl.drawElements(gl.TRIANGLES, PLANE.count, gl.UNSIGNED_SHORT, 0);
+  frameData[36] = box.x; frameData[37] = box.z; frameData[38] = 0.06 + gap * 0.44;          // boxProj @ 144
+  frameData[39] = Math.max(0.05, Math.min(0.78, 0.78 - gap * 0.46));
+  frameData[40] = CFG.outW * 0.92; frameData[41] = CFG.outD * 0.92;                         // boxHalf @ 160
 
-  gl.disable(gl.BLEND);
+  bgData[0] = PAL.top[0]; bgData[1] = PAL.top[1]; bgData[2] = PAL.top[2];
+  bgData[4] = PAL.bot[0]; bgData[5] = PAL.bot[1]; bgData[6] = PAL.bot[2];
+}
 
-  /* box floor - opaque, and it carries the ball's contact shadow */
+/* ------------------------------------------------------------------- draw */
+var order = [0, 1, 2, 3], key = [0, 0, 0, 0];
+
+function draw() {
+  sichereZiele();
+  schreibeBild();
+
+  /* Objekt 0: studio ground with the box's cast shadow */
   var lx = ball.x - box.x, ly = ball.y - box.y, lz = ball.z - box.z;
   var above = Math.max(0, ly - (-CFG.hy + CFG.R));
   var bshade = Math.max(0, 1 - above / 1.05) * 0.9;
   if (Math.abs(lx) > CFG.hx + 0.3 || Math.abs(lz) > CFG.hz + 0.3) bshade = 0;
-  gl.uniform3f(LU.uBallProj, lx, lz, bshade);
 
+  trs(model, 0, CFG.groundY, 0, GSIZE, 1, GSIZE);
+  schreibeObjekt(0, model, IDENT3, PAL.grnd, PAL.shade, GSIZE, 1, GSIZE, 0.88, 3, 0, lx, lz, bshade);
+
+  /* Objekt 1: box floor - opaque, and it carries the ball's contact shadow */
   trs(model, box.x + FLOOR.c[0], box.y + FLOOR.c[1], box.z + FLOOR.c[2],
       FLOOR.s[0], FLOOR.s[1], FLOOR.s[2]);
-  gl.uniformMatrix4fv(LU.uModel, false, model);
-  setObj(1, PAL.floor, PAL.fline, FLOOR.s[0], FLOOR.s[1], FLOOR.s[2], 1, FLOOR.glow);
-  bindMesh(progLit, CUBE);
-  gl.drawElements(gl.TRIANGLES, CUBE.count, gl.UNSIGNED_SHORT, 0);
+  schreibeObjekt(1, model, IDENT3, PAL.floor, PAL.fline, FLOOR.s[0], FLOOR.s[1], FLOOR.s[2],
+                 1, 1, FLOOR.glow, lx, lz, bshade);
 
-  /* the ball - its own orientation supplies the normal matrix */
+  /* Objekt 2: the ball - its own orientation supplies the normal matrix */
   qrs(model, ball.q, ball.x, ball.y, ball.z, CFG.R);
   qm3(ballN, ball.q);
-  gl.uniformMatrix4fv(LU.uModel, false, model);
-  gl.uniformMatrix3fv(LU.uNMat, false, ballN);
-  setObj(2, PAL.ballA, PAL.ballB, 1, 1, 1, 1, 0);
-  bindMesh(progLit, SPHERE);
-  gl.drawElements(gl.TRIANGLES, SPHERE.count, gl.UNSIGNED_SHORT, 0);
-  gl.uniformMatrix3fv(LU.uNMat, false, IDENT3);
+  schreibeObjekt(2, model, ballN, PAL.ballA, PAL.ballB, 1, 1, 1, 1, 2, 0, lx, lz, bshade);
 
-  /* glass walls last, back to front, blended and not writing depth */
+  /* Objekte 3-6: glass walls, back to front, blended and not writing depth */
   var i, j, w;
   for (i = 0; i < 4; i++) {
     w = WALLS[i];
@@ -1086,20 +1145,57 @@ function draw() {
     for (j = i - 1; j >= 0 && key[order[j]] < ki; j--) order[j + 1] = order[j];
     order[j + 1] = oi;
   }
-
-  gl.enable(gl.BLEND);
-  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-  gl.depthMask(false);
-  bindMesh(progLit, CUBE);
   for (i = 0; i < 4; i++) {
     w = WALLS[order[i]];
     trs(model, box.x + w.c[0], box.y + w.c[1], box.z + w.c[2], w.s[0], w.s[1], w.s[2]);
-    gl.uniformMatrix4fv(LU.uModel, false, model);
-    setObj(0, PAL.wall, PAL.wall, w.s[0], w.s[1], w.s[2], PAL.wallA, w.glow);
-    gl.drawElements(gl.TRIANGLES, CUBE.count, gl.UNSIGNED_SHORT, 0);
+    schreibeObjekt(3 + i, model, IDENT3, PAL.wall, PAL.wall, w.s[0], w.s[1], w.s[2],
+                   PAL.wallA, 0, w.glow, lx, lz, bshade);
   }
-  gl.depthMask(true);
-  gl.disable(gl.BLEND);
+
+  device.queue.writeBuffer(frameBuf, 0, frameData);
+  device.queue.writeBuffer(objBuf, 0, objData);
+  device.queue.writeBuffer(bgBuf, 0, bgData);
+
+  var enc = device.createCommandEncoder();
+  var pass = enc.beginRenderPass({
+    colorAttachments: [{
+      view: msaaView, resolveTarget: context.getCurrentTexture().createView(),
+      clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: "clear", storeOp: "discard"
+    }],
+    depthStencilAttachment: { view: depthView, depthClearValue: 1.0, depthLoadOp: "clear", depthStoreOp: "discard" }
+  });
+
+  /* backdrop: a full-screen triangle, no depth involvement */
+  pass.setPipeline(pipeBg);
+  pass.setBindGroup(0, bgBind);
+  pass.setVertexBuffer(0, bgVerts);
+  pass.draw(3);
+
+  /* Studioboden, geblendet, schreibt Tiefe */
+  pass.setPipeline(pipeGround);
+  pass.setBindGroup(0, litBind, objOffsets, 0, 1);
+  setMesh(pass, PLANE);
+  pass.drawIndexed(PLANE.count);
+
+  /* Kastenboden und Kugel, deckend */
+  pass.setPipeline(pipeOpaque);
+  setMesh(pass, CUBE);
+  pass.setBindGroup(0, litBind, objOffsets, 1, 1);
+  pass.drawIndexed(CUBE.count);
+  setMesh(pass, SPHERE);
+  pass.setBindGroup(0, litBind, objOffsets, 2, 1);
+  pass.drawIndexed(SPHERE.count);
+
+  /* Glaswaende, sortiert, geblendet, ohne Tiefenschreiben */
+  pass.setPipeline(pipeGlass);
+  setMesh(pass, CUBE);
+  for (i = 0; i < 4; i++) {
+    pass.setBindGroup(0, litBind, objOffsets, 3 + i, 1);
+    pass.drawIndexed(CUBE.count);
+  }
+
+  pass.end();
+  device.queue.submit([enc.finish()]);
 }
 
 /* -------------------------------------------------------------- main loop */
@@ -1158,7 +1254,7 @@ function tick(now) {
   lastHit *= Math.exp(-0.85 * dt);
   hitDecay *= Math.exp(-2.2 * dt);
 
-  draw();
+  if (!verloren) draw();
 
   teleT += dt;
   if (teleT > 0.12) {
@@ -1179,13 +1275,90 @@ window.addEventListener("resize", resize);
 window.addEventListener("orientationchange", function () { setTimeout(resize, 220); });
 document.addEventListener("visibilitychange", function () { last = 0; acc = 0; });
 
-resize();
-resetBall(true);
-ball.x = box.x; ball.z = box.z;
-requestAnimationFrame(tick);
+// Geraet holen, Puffer/Shader/Pipelines in einem Validierungs-Scope anlegen;
+// jeder Fehler dort fuehrt zur WebGL-Fassung.
+async function init() {
+  var gpu;
+  try { gpu = await starteWebGPU(canvas); }
+  catch (err) { return rueckfall(err && err.message ? err.message : String(err)); }
+  if (!gpu) return;                              // rueckfall() laeuft bereits
+  device = gpu.device; context = gpu.context; format = gpu.format;
+  device.lost.then(function () { verloren = true; });
+
+  device.pushErrorScope("validation");
+
+  CUBE   = buildCube();
+  SPHERE = buildSphere(56, 34);
+  PLANE  = buildPlane();
+  bgVerts  = puffer(new Float32Array([-1, -1, 3, -1, -1, 3]), GPUBufferUsage.VERTEX, "bg verts");
+  frameBuf = device.createBuffer({ label: "frame", size: frameData.byteLength,
+                                   usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  objBuf   = device.createBuffer({ label: "objects", size: objData.byteLength,
+                                   usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  bgBuf    = device.createBuffer({ label: "bg", size: bgData.byteLength,
+                                   usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+  var mods = await Promise.all([shaderModul(WGSL_LIT, "lit"), shaderModul(WGSL_BG, "bg")]);
+  var litMod = mods[0], bgMod = mods[1];
+
+  var litBgl = device.createBindGroupLayout({ label: "lit", entries: [
+    { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+    { binding: 1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform", hasDynamicOffset: true } }
+  ] });
+  var bgBgl = device.createBindGroupLayout({ label: "bg", entries: [
+    { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } }
+  ] });
+  var litLayout = device.createPipelineLayout({ label: "lit", bindGroupLayouts: [litBgl] });
+  var bgLayout  = device.createPipelineLayout({ label: "bg", bindGroupLayouts: [bgBgl] });
+
+  litBind = device.createBindGroup({ label: "lit", layout: litBgl, entries: [
+    { binding: 0, resource: { buffer: frameBuf } },
+    { binding: 1, resource: { buffer: objBuf, offset: 0, size: OBJ_STRIDE } }
+  ] });
+  bgBind = device.createBindGroup({ label: "bg", layout: bgBgl, entries: [
+    { binding: 0, resource: { buffer: bgBuf } }
+  ] });
+
+  // Alle vier Pipelines parallel anlegen. Bei createRenderPipelineAsync kommt
+  // ein Validierungsfehler als abgewiesenes Promise (GPUPipelineError), darum
+  // werden beide Wege geprueft: das Promise und der Error-Scope.
+  var pipes = null, pipeFehler = null;
+  try {
+    pipes = await Promise.all([
+      device.createRenderPipelineAsync({
+        label: "bg",
+        layout: bgLayout,
+        vertex: { module: bgMod, entryPoint: "vs", buffers: [
+          { arrayStride: 8, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x2" }] }
+        ] },
+        fragment: { module: bgMod, entryPoint: "fs", targets: [{ format: format }] },
+        primitive: { topology: "triangle-list", cullMode: "none" },
+        depthStencil: { format: "depth24plus", depthWriteEnabled: false, depthCompare: "always" },
+        multisample: { count: 4 }
+      }),
+      litPipeline("ground", litLayout, litMod, true,  true),
+      litPipeline("opaque", litLayout, litMod, false, true),
+      litPipeline("glass",  litLayout, litMod, true,  false)
+    ]);
+  } catch (err) { pipeFehler = err; }
+
+  var fehler = await device.popErrorScope();
+  if (fehler || pipeFehler) {
+    var f = fehler || pipeFehler;
+    console.error("WebGPU validation:", f && f.message ? f.message : String(f));
+    return rueckfall("validation error");
+  }
+  pipeBg = pipes[0]; pipeGround = pipes[1]; pipeOpaque = pipes[2]; pipeGlass = pipes[3];
+
+  resize();
+  resetBall(true);
+  ball.x = box.x; ball.z = box.z;
+  requestAnimationFrame(tick);
+}
+
+init();
 
 })();
 </script>
-<!--CONTENT-END-->
-</body>
-</html>
+
+</body></html>

@@ -1,28 +1,28 @@
 # Ball in a Glass Box
 
-A WebGL physics demo built for the iPhone: a brass test mass loose inside an
+A physics demo built for the iPhone: a brass test mass loose inside an
 open-topped acrylic box. Drag the box and the ball answers — it lags behind when
 you yank sideways, slams into the wall you drag toward, goes light when you drop
 the box, and rolls to a stop when you hold still.
 
-Single self-contained `index.html`. No build step, no libraries, no bundler —
-raw WebGL 1.0 and about 900 lines of JavaScript.
+No build step, no libraries, no bundler. `index.html` renders with raw WebGPU;
+`webgl.html` is the WebGL 1.0 version the demo started as, loaded automatically
+when WebGPU is not available. Both are single files with the same physics, controls
+and telemetry; the fonts come from `../fonts/`.
 
 ## Viewing it on a phone
 
-Any of these work:
+Serve the repository root (not this folder — the fonts live one level up):
 
+- **GitHub Pages** — enable Pages for the repo and open
+  `https://robertf86.github.io/webgl-lab/ball-in-box/`. Pages is HTTPS, so the
+  phone gets the WebGPU version.
 - **Serve it locally** and open the LAN address on the phone (same Wi-Fi):
   ```
-  cd ball-in-box && python3 -m http.server 8000
+  python3 -m http.server 8000
   ```
-  then browse to `http://<your-computer-ip>:8000` on the iPhone.
-- **GitHub Pages** — enable Pages for the repo and open
-  `/ball-in-box/`.
-- **Open the file directly** — it runs fine from `file://` too; only the web
-  font fails to load, and the fallback stack covers that.
-
-Add it to the Home Screen and it launches full-screen with no browser chrome.
+  then browse to `http://<your-computer-ip>:8000/ball-in-box/`. Plain HTTP on a
+  LAN address is not a secure context, so this lands on the WebGL version.
 
 ## Controls
 
@@ -73,5 +73,10 @@ four glass walls sorted back-to-front with depth writes off. Back-face culling
 means the near wall shows its outer face and the far wall its inner face, so
 each pane contributes exactly one layer of glass.
 
-The scene reads its colours from the same CSS custom properties as the interface,
-so the 3D view follows the viewer's light/dark theme.
+The WebGPU version draws the same scene in WGSL, in one render pass with 4×
+MSAA. The projection is converted to WebGPU's 0…1 depth range; camera and field
+of view are unchanged.
+
+The scene reads its colours from the same CSS custom properties as the
+interface. The page ships with `data-theme="dark"`; without that attribute the
+3D view follows the viewer's light/dark setting.

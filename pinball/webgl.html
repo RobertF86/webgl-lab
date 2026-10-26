@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Pinball &mdash; Rigid Body</title>
+<link rel="stylesheet" href="style.css?v=38">
+</head>
+<body>
+
+<div id="stage"><canvas id="gl" aria-label="Simulated pinball table, player's point of view"></canvas></div>
+
+<div class="plate" id="plate">
+  <h1>FRIDAYVFX Pinball</h1>
+  <p class="sub">Rigid-body pinball &mdash; swept circle&ndash;segment contacts, restitution and
+     friction per surface, flippers driven as rotating capsules. Bally-style rules:
+     bonus ladder, V-F-X lanes, drop-target banks and a skill shot.</p>
+  <p class="read" id="readout">&nbsp;</p>
+</div>
+
+<div class="hint" id="hint">
+  <span class="k">Space</span> start &middot; then hold to pull, release to launch
+  &nbsp;&middot;&nbsp; <span class="k">&larr;</span> <span class="k">&rarr;</span> flippers
+  &nbsp;&middot;&nbsp; <span class="k">N</span> nudge
+  &nbsp;&middot;&nbsp; <span class="k">R</span> new game
+</div>
+
+<div class="touch" id="touch" hidden>
+  <button type="button" id="tLeft"  aria-label="Left flipper"></button>
+  <button type="button" id="tPlunge" aria-label="Launch">LAUNCH</button>
+  <button type="button" id="tRight" aria-label="Right flipper"></button>
+</div>
+
+<p class="fallback" id="fallback" hidden></p>
+
+<script src="raum.js?v=37"></script>
+<script src="physik.js?v=45"></script>
+<script src="tisch.js?v=46"></script>
+<script src="umgebung.js?v=40"></script>
+<script src="spiel.js?v=45"></script>
+<script src="spielfeld.js?v=44"></script>
+<script src="pinball.js?v=46"></script>
+<script>
+if (location.hash.indexOf("#fallback") === 0) {
+	var b = document.createElement("div");
+	var grund = decodeURIComponent(location.hash.replace(/^#fallback=?/, ""));
+	b.textContent = "WebGL fallback \u2014 " + (grund ? grund : "this browser has no WebGPU");
+	b.style.cssText = "position:fixed;left:50%;top:8px;transform:translateX(-50%);font:11px/1.4 ui-monospace,Menlo,monospace;color:#b8b9bf;background:rgba(0,0,0,.55);padding:4px 10px;border-radius:999px;z-index:99;pointer-events:none;letter-spacing:.06em;white-space:nowrap;";
+	document.body.appendChild(b);
+}
+</script>
+</body>
+</html>
